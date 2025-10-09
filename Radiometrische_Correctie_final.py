@@ -70,6 +70,40 @@ def histogram_match_masked(image, reference, mask):
 
     return matched.astype(image.dtype)
 
+from skimage.exposure import match_histograms
+import numpy as np
+
+def histogram_match_masked_apply_globally(image, reference, mask):
+    matched = np.zeros_like(image)
+    bands = image.shape[2]
+
+    for b in range(bands):
+        source_band = image[:, :, b]
+        reference_band = reference[:, :, b]
+
+        # Compute matched values only from masked pixels
+        matched_masked = match_histograms(
+            source_band[mask], reference_band[mask], channel_axis=None
+        )
+
+        # Build a lookup by mapping sorted source values in masked area
+        source_masked_sorted = np.sort(source_band[mask])
+        matched_sorted = np.sort(matched_masked)
+
+        # Interpolate to get a mapping function
+        # Clip is used to avoid extrapolation issues
+        full_band = np.interp(
+            source_band.ravel(),
+            source_masked_sorted,
+            matched_sorted,
+            left=matched_sorted[0],
+            right=matched_sorted[-1]
+        ).reshape(source_band.shape)
+
+        matched[:, :, b] = full_band
+
+    return matched.astype(image.dtype)
+
 def save_multiband_image(array, path, reference_metadata_path):
     with rasterio.open(reference_metadata_path) as ref:
         profile = ref.profile
