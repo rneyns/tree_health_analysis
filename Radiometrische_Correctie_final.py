@@ -7,10 +7,10 @@ from skimage.exposure import match_histograms
 import matplotlib.pyplot as plt
 
 #Input & Output
-input_folder = "/Users/alexsamyn/Documents/BAP_(Mac)/BAP_New/GC"
-mask_path = "/Users/alexsamyn/Documents/BAP_(Mac)/Data Brussel/Raster_Buildings_Null.tif"
-output_folder = "/Users/alexsamyn/Documents/BAP_(Mac)/BAP_New/RC"
-referentie_path = "/Users/alexsamyn/Documents/BAP_(Mac)/BAP_New/GC/R_20230405_GC.tif"
+input_folder = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/Alex PlanetScope'
+mask_path = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/radiometric correction/buildings_mask.tif'
+output_folder = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/Alex PlanetScope corrected'
+referentie_path = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/Alex PlanetScope/R_20230405_GC.tif'
 
 os.makedirs(output_folder, exist_ok=True)
 
@@ -52,57 +52,103 @@ def resample_mask_to_image(mask_path, reference_image_path):
 
     return (mask_resampled == 1)
 
-def histogram_match_masked(image, reference, mask):
-    matched = np.zeros_like(image)
-    bands = image.shape[2]
-
-    for b in range(bands):
-        source_band = image[:, :, b]
-        reference_band = reference[:, :, b]
-
-        matched_band = match_histograms(
-            source_band[mask], reference_band[mask], channel_axis=None
-        )
-
-        full_band = source_band.copy()
-        full_band[mask] = matched_band
-        matched[:, :, b] = full_band
-
-    return matched.astype(image.dtype)
-
-from skimage.exposure import match_histograms
 import numpy as np
 
-def histogram_match_masked_apply_globally(image, reference, mask):
-    matched = np.zeros_like(image)
-    bands = image.shape[2]
+def _cdf_mapping_from_masked_1d(source_band, reference_band, mask,
+                                nbins=2048, clip_percent=(0.5, 99.5), sample_max=250_000):
+    """
+    Build a piecewise-linear mapping f such that CDF_source(x) ≈ CDF_ref(f(x)),
+    but CDFs are computed *only* over masked pixels (buildings).
+    Returns (src_grid, mapped_values) to be used with np.interp.
+    """
+    # Pull masked values
+    svals = source_band[mask]
+    rvals = reference_band[mask]
 
+    # Optional down-sampling for speed (keeps CDF shape)
+    if svals.size > sample_max:
+        idx = np.random.choice(svals.size, sample_max, replace=False)
+        svals = svals[idx]
+    if rvals.size > sample_max:
+        idx = np.random.choice(rvals.size, sample_max, replace=False)
+        rvals = rvals[idx]
+
+    # Robust clip ranges to avoid outliers skewing the mapping
+    s_lo, s_hi = np.percentile(svals, clip_percent)
+    r_lo, r_hi = np.percentile(rvals, clip_percent)
+
+    # Build histograms on clipped ranges
+    s_hist, s_edges = np.histogram(np.clip(svals, s_lo, s_hi), bins=nbins, range=(s_lo, s_hi), density=False)
+    r_hist, r_edges = np.histogram(np.clip(rvals, r_lo, r_hi), bins=nbins, range=(r_lo, r_hi), density=False)
+
+    # Convert to CDFs
+    s_cdf = np.cumsum(s_hist).astype(float); s_cdf /= s_cdf[-1] if s_cdf[-1] > 0 else 1.0
+    r_cdf = np.cumsum(r_hist).astype(float); r_cdf /= r_cdf[-1] if r_cdf[-1] > 0 else 1.0
+
+    # Grid at bin centers
+    s_centers = 0.5 * (s_edges[:-1] + s_edges[1:])
+    r_centers = 0.5 * (r_edges[:-1] + r_edges[1:])
+
+    # For each source CDF level, find reference intensity with same CDF
+    # This yields a monotone piecewise-linear mapping s -> r
+    mapped_vals = np.interp(s_cdf, r_cdf, r_centers)
+
+    # Ensure strictly increasing grid (guard against flat tails)
+    # Remove duplicate s_centers if present
+    keep = np.concatenate(([True], np.diff(s_centers) > 0))
+    return s_centers[keep], mapped_vals[keep]
+
+
+def fit_luts_from_mask(source_img, reference_img, mask,
+                       nbins=2048, clip_percent=(0.5, 99.5), sample_max=250_000):
+    """
+    Fit per-band LUTs using only masked (building) pixels.
+    Returns list of (src_grid, mapped_values) per band.
+    """
+    if source_img.dtype.kind in ("u", "i"):
+        src = source_img.astype(np.float32)
+    else:
+        src = source_img.copy()
+    if reference_img.dtype.kind in ("u", "i"):
+        ref = reference_img.astype(np.float32)
+    else:
+        ref = reference_img.copy()
+
+    bands = src.shape[2]
+    luts = []
     for b in range(bands):
-        source_band = image[:, :, b]
-        reference_band = reference[:, :, b]
-
-        # Compute matched values only from masked pixels
-        matched_masked = match_histograms(
-            source_band[mask], reference_band[mask], channel_axis=None
+        s_grid, r_map = _cdf_mapping_from_masked_1d(
+            src[:, :, b], ref[:, :, b], mask,
+            nbins=nbins, clip_percent=clip_percent, sample_max=sample_max
         )
+        luts.append((s_grid, r_map))
+    return luts
 
-        # Build a lookup by mapping sorted source values in masked area
-        source_masked_sorted = np.sort(source_band[mask])
-        matched_sorted = np.sort(matched_masked)
 
-        # Interpolate to get a mapping function
-        # Clip is used to avoid extrapolation issues
-        full_band = np.interp(
-            source_band.ravel(),
-            source_masked_sorted,
-            matched_sorted,
-            left=matched_sorted[0],
-            right=matched_sorted[-1]
-        ).reshape(source_band.shape)
+def apply_luts_to_image(image, luts, out_dtype=None):
+    """
+    Apply per-band LUTs globally (to all pixels in the image).
+    Keeps dtype unless out_dtype provided.
+    """
+    if out_dtype is None:
+        out_dtype = image.dtype
+    imgf = image.astype(np.float32) if image.dtype.kind in ("u", "i") else image.copy()
 
-        matched[:, :, b] = full_band
+    out = np.empty_like(imgf)
+    for b, (s_grid, r_map) in enumerate(luts):
+        band = imgf[:, :, b]
+        # Piecewise-linear interpolation for every pixel
+        out[:, :, b] = np.interp(band.ravel(), s_grid, r_map,
+                                 left=r_map[0], right=r_map[-1]).reshape(band.shape)
 
-    return matched.astype(image.dtype)
+    # If original was integer, round & clip to its valid range
+    if np.issubdtype(out_dtype, np.integer):
+        info = np.iinfo(out_dtype)
+        out = np.clip(np.rint(out), info.min, info.max).astype(out_dtype)
+    else:
+        out = out.astype(out_dtype)
+    return out
+
 
 def save_multiband_image(array, path, reference_metadata_path):
     with rasterio.open(reference_metadata_path) as ref:
@@ -162,7 +208,9 @@ def process_all_images_with_mask(input_folder, mask_path, output_folder, referen
 
         print(f"Bezig met: {filename}")
         img, _ = load_single_image(input_folder, filename)
-        corrected = histogram_match_masked(img, reference_image, mask)
+        # 1) fit mapping only on buildings, 2) apply mapping to the whole image
+        luts = fit_luts_from_mask(img, reference_image, mask, nbins=2048, clip_percent=(0.5, 99.5))
+        corrected = apply_luts_to_image(img, luts)
 
         if filename == os.path.basename(referentie_path):
             show_matching_visual(img, corrected, reference_image, mask, filename=filename)
