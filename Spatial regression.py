@@ -30,7 +30,7 @@ from sklearn.inspection import PartialDependenceDisplay
 from sklearn.cluster import MiniBatchKMeans
 
 # ------------------- CONFIG -------------------
-METRICS_CSV     = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/ndvi_metrics.csv'
+METRICS_CSV     = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/ndvi_metrics_clean.csv'
 TARGET_COL      = "pm25"
 FEATURE_COLS    = ["sos_doy","peak_doy","ndvi_peak","slope_sos_peak"]
 LON_COL         = "lon"
