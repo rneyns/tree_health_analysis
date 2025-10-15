@@ -43,6 +43,10 @@ PM25_RASTER_PATH  = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree h
 IMPERVIOUS_RASTER_PATH = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/imperviousness/DW_built_fraction_Brussels_2024-01-01_2024-12-31.tif'  # <-- set this (e.g., Dynamic World built-% GeoTIFF)
 IMPERVIOUS_BUFFERS_M   = [0, 5, 10, 20]                       # meters; 0 = point, others = circular mean
 
+# Temperature raster (single band). Values in K or °C are supported.
+TEMP_RASTER_PATH   = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/Temperature_layers_Gaëlle/max_Brussels_annual.tif'   # <-- set this
+TEMP_BUFFERS_M     = [0, 5, 10, 20]               # meters; 0 = point sample
+
 AUTO_SCALE_10000  = True
 MIN_OBS_TO_FIT    = 6
 SAVE_DOY_MAPPING  = True
@@ -57,6 +61,89 @@ IRLS_ITERS        = 3
 N_FIT_SAMPLES     = 2000
 DAYS_FOR_PLOT     = 365.0
 # --------------------------------------------------------------
+
+# -------------------- The functions for temperature extraction ----------------------------
+def _mean_in_circular_window(arr, cx, cy, radius_px, nodata):
+    """Mean of arr inside a circle of radius_px around (cx,cy) in pixel coords."""
+    h, w = arr.shape
+    yy, xx = np.ogrid[:h, :w]
+    mask = (xx - cx)**2 + (yy - cy)**2 <= radius_px**2
+    vals = arr[mask]
+    if nodata is not None:
+        vals = vals[vals != nodata]
+    if vals.size == 0:
+        return np.nan
+    return float(np.nanmean(vals))
+
+def _sample_multi_buffers_generic(raster_path, trees_gdf, buffers_m, value_postproc=None):
+    """
+    Generic multi-buffer sampler.
+    Returns dict {radius_m: [values per tree]}.
+    - value_postproc: optional function v->v to transform values (e.g., Kelvin->Celsius).
+    """
+    buffers_m = list(sorted(set(float(r) for r in buffers_m)))
+    out = {r: [] for r in buffers_m}
+
+    with rasterio.open(raster_path) as src:
+        pts = trees_gdf.to_crs(src.crs) if str(trees_gdf.crs) != str(src.crs) else trees_gdf
+        px_w = abs(src.transform.a)
+        px_h = abs(src.transform.e)
+        px_size = (px_w + px_h) / 2.0
+        nodata = src.nodata
+        rad_px = {r: (0 if r <= 0 else max(1, int(round(r / max(px_size, 1e-9))))) for r in buffers_m}
+
+        # iterate trees
+        for geom in pts.geometry:
+            if geom.is_empty:
+                for r in buffers_m: out[r].append(np.nan)
+                continue
+            x, y = (geom.geoms[0].x, geom.geoms[0].y) if geom.geom_type == "MultiPoint" and len(geom.geoms) else (geom.x, geom.y)
+            if np.isnan(x) or np.isnan(y):
+                for r in buffers_m: out[r].append(np.nan)
+                continue
+            col, row = src.index(x, y)
+
+            # read 1x1 once for point
+            v_point = np.nan
+            win_pt = Window(col, row, 1, 1).intersection(Window(0, 0, src.width, src.height))
+            if win_pt.width > 0 and win_pt.height > 0:
+                arr_pt = src.read(1, window=win_pt, boundless=True, fill_value=nodata)
+                v_point = float(arr_pt[0, 0])
+                if nodata is not None and v_point == nodata:
+                    v_point = np.nan
+
+            for r in buffers_m:
+                rp = rad_px[r]
+                if r <= 0 or rp == 0:
+                    v = v_point
+                else:
+                    win = Window(col - rp, row - rp, 2*rp + 1, 2*rp + 1).intersection(Window(0, 0, src.width, src.height))
+                    if win.width <= 0 or win.height <= 0:
+                        v = np.nan
+                    else:
+                        arr = src.read(1, window=win, boundless=True, fill_value=nodata)
+                        cx = (col - win.col_off); cy = (row - win.row_off)
+                        v = _mean_in_circular_window(arr, cx, cy, rp, nodata)
+
+                if value_postproc is not None and np.isfinite(v):
+                    v = value_postproc(v)
+
+                out[r].append(float(v) if np.isfinite(v) else np.nan)
+
+    return out
+
+# Impervious sampler now just wraps the generic one (keep your old function if you prefer)
+def sample_impervious_multi_buffers(raster_path, trees_gdf, buffers_m):
+    # If raster is 0..100 %, convert to 0..1
+    def to_unit(v): return v/100.0 if v > 1.5 else v
+    return _sample_multi_buffers_generic(raster_path, trees_gdf, buffers_m, value_postproc=to_unit)
+
+def sample_temperature_multi_buffers(raster_path, trees_gdf, buffers_m):
+    # Auto-convert Kelvin to °C if values look like Kelvin
+    # Heuristic: if v > 150, subtract 273.15
+    def to_celsius(v): return (v - 273.15) if v > 150 else v
+    return _sample_multi_buffers_generic(raster_path, trees_gdf, buffers_m, value_postproc=to_celsius)
+
 
 
 # ---------------- Double logistic model ----------------
@@ -264,6 +351,12 @@ def main():
     )
     print("[OK] Impervious buffers (m):", IMPERVIOUS_BUFFERS_M)
 
+    # --- Temperature multi-buffers (°C) ---
+    temp_by_r = sample_temperature_multi_buffers(
+        TEMP_RASTER_PATH, trees, buffers_m=TEMP_BUFFERS_M
+    )
+    print("[OK] Temperature buffers (m):", TEMP_BUFFERS_M)
+
     # 2) NDVI rasters + dates
     ndvi_files = sorted(glob(os.path.join(NDVI_DIR, NDVI_GLOB)))
     dated = []
@@ -334,6 +427,7 @@ def main():
 
     # Prepare output column names for impervious buffers
     imperv_cols = {r: f"impervious_r{int(r)}" if float(r).is_integer() else f"impervious_r{r}" for r in IMPERVIOUS_BUFFERS_M}
+    temp_cols   = {r: f"temp_r{int(r)}"       if float(r).is_integer() else f"temp_r{r}"       for r in TEMP_BUFFERS_M}
 
     for tid in range(n_trees):
         t = np.asarray(per_tree_t[tid], dtype=float)
@@ -386,6 +480,12 @@ def main():
         for r in IMPERVIOUS_BUFFERS_M:
             vals = imperv_by_r[r]
             row[imperv_cols[r]] = vals[tid] if tid < len(vals) else np.nan
+
+        # attach temperature per radius (°C)
+        for r in TEMP_BUFFERS_M:
+            vals = temp_by_r[r]
+            row[temp_cols[r]] = vals[tid] if tid < len(vals) else np.nan
+
 
         metrics_rows.append(row)
 

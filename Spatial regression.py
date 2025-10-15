@@ -32,7 +32,7 @@ from sklearn.cluster import MiniBatchKMeans
 # ------------------- CONFIG -------------------
 METRICS_CSV     = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/ndvi_metrics_clean.csv'
 TARGET_COL      = "pm25"
-FEATURE_COLS    = ["sos_doy","peak_doy","ndvi_peak","slope_sos_peak"]
+FEATURE_COLS    = ["sos_doy","peak_doy","ndvi_peak","slope_sos_peak","impervious_r0","impervious_r5","impervious_r10","impervious_r20","temp_r0","temp_r5","temp_r10","temp_r20"]
 LON_COL         = "lon"
 LAT_COL         = "lat"
 
@@ -64,6 +64,9 @@ LOCAL_WEIGHT             = 0.5
 N_ESTIMATORS_RF  = 500
 MAX_FEATURES_RF  = "sqrt"
 N_JOBS_RF        = -1
+
+
+
 # ------------------------------------------------
 
 

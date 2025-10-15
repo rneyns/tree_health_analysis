@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 input_folder = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/Alex PlanetScope'
 mask_path = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/radiometric correction/buildings_mask.tif'
 output_folder = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/Alex PlanetScope corrected'
-referentie_path = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/Alex PlanetScope/R_20230405_GC.tif'
+referentie_path = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/Alex PlanetScope/20230405.tif'
 
 os.makedirs(output_folder, exist_ok=True)
 
