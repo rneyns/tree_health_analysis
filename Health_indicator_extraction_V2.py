@@ -454,15 +454,27 @@ def main():
         mask = (t_fit >= t0) & (t_fit <= t1)
         if not np.any(mask):
             mask = (t_fit >= 0.0) & (t_fit <= max(0.5, S_est))
-        idx_sos = np.argmax(y3[mask])
+
+        # SOS: where the 3rd derivative is maximal in the early-season window
+        idx_sos = int(np.argmax(y3[mask]))
         sos_t = float(t_fit[mask][idx_sos])
         sos_doy = sos_t * DAYS_FOR_PLOT
-
-        idx_peak = int(np.argmax(y_fit))
-        peak_t = float(t_fit[idx_peak])
-        peak_doy = peak_t * DAYS_FOR_PLOT
-        ndvi_peak = float(y_fit[idx_peak])
         ndvi_sos = float(np.interp(sos_t, t_fit, y_fit))
+
+        # NEW: Peak defined as the "flattening after SOS" = minimum of 3rd derivative after SOS
+        post_end = min(1.0, S_est + A_est)  # end of green-up
+        post_mask = (t_fit > sos_t) & (t_fit <= post_end)
+
+        if np.any(post_mask) and np.any(np.isfinite(y3[post_mask])):
+            idx_peak_local = int(np.nanargmin(y3[post_mask]))  # min jerk after SOS
+            peak_t = float(t_fit[post_mask][idx_peak_local])
+        else:
+            # fallback: classic peak NDVI time
+            idx_peak = int(np.argmax(y_fit))
+            peak_t = float(t_fit[idx_peak])
+
+        peak_doy = peak_t * DAYS_FOR_PLOT
+        ndvi_peak = float(np.interp(peak_t, t_fit, y_fit))
 
         dt_days = max(1e-6, peak_doy - sos_doy)
         slope_sos_peak = (ndvi_peak - ndvi_sos) / dt_days
