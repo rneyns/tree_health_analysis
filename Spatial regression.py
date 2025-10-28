@@ -31,13 +31,13 @@ from sklearn.cluster import MiniBatchKMeans
 
 # ------------------- CONFIG -------------------
 METRICS_CSV     = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/ndvi_metrics_clean.csv'
-TARGET_COL      = "pm25"
-FEATURE_COLS    = ["sos_doy","peak_doy","ndvi_peak","slope_sos_peak","impervious_r0","impervious_r5","impervious_r10","impervious_r20","temp_r0","temp_r5","temp_r10","temp_r20"]
+TARGET_COL      = "auc_full"
+FEATURE_COLS    = ["pm25","impervious_r10","impervious_r20","impervious_r50","impervious_r100","temp_r100","temp_r200"]
 LON_COL         = "lon"
 LAT_COL         = "lat"
 
 # Tree layer used to fetch lon/lat by ID
-TREE_LAYER_PATH = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/tree layers/Acer_platanoides.shp'
+TREE_LAYER_PATH = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/tree layers/Tilia_x_euchlora.shp'
 TREE_LAYER_NAME = None
 CSV_ID_COL      = "tree_id"
 LAYER_ID_COL    = "crown_id"
@@ -217,6 +217,15 @@ def make_spatial_folds(coords_xy: np.ndarray, n_folds=5, n_clusters=60, min_test
         folds.append((train_idx, test_idx))
     return folds
 
+from sklearn.model_selection import KFold
+
+def make_random_folds(n, n_folds=10, random_state=42, shuffle=True):
+    kf = KFold(n_splits=n_folds, shuffle=shuffle, random_state=random_state)
+    folds = []
+    for tr_idx, te_idx in kf.split(np.arange(n)):
+        folds.append((tr_idx, te_idx))
+    return folds
+
 
 # --------- Plot helper ---------
 def _obs_pred(y_true, y_hat, name, fname, out_dir, target_label):
@@ -281,9 +290,9 @@ def main():
     n_all = len(df)
 
     # 5) Make spatial folds
-    folds = make_spatial_folds(coords_all, n_folds=N_FOLDS, n_clusters=N_CLUSTERS,
-                               min_test_fract=TEST_MIN_FRACT, random_state=RANDOM_STATE)
-
+    #folds = make_spatial_folds(coords_all, n_folds=N_FOLDS, n_clusters=N_CLUSTERS,min_test_fract=TEST_MIN_FRACT, random_state=RANDOM_STATE)
+    folds = make_random_folds(len(df), n_folds=N_FOLDS, random_state=RANDOM_STATE)
+    
     # Stores
     all_preds = []
     fold_metrics = []

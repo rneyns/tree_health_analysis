@@ -23,11 +23,11 @@ POINTS_LAYER = None                           # or set to layer name; None = def
 ID_FIELD = "tree_id"
 
 # target(s) to model (choose one at a time)
-TARGET = "ndvi_peak"               # try also "sos_doy" or "slope_sos_peak"
+TARGET = "auc_full"               # try also "sos_doy" or "slope_sos_peak"
 
 # families of multi-scale predictors (edit to match your columns)
-IMPERV_FAMS = [["impervious_r5","impervious_r10","impervious_r20"]]
-TEMP_FAMS   = [["temp_r5","temp_r10","temp_r20"]]
+IMPERV_FAMS = [["impervious_r10","impervious_r20","impervious_r50","impervious_r50"]]
+TEMP_FAMS   = [["temp_r100","temp_r200"]]
 PM_COL      = "pm25"               # will be residualized vs temp_r10 (edit if needed)
 
 # block/grid size for spatial CV (meters)
@@ -207,7 +207,7 @@ def main():
 
     # residualize PM2.5 on temperature (use r10 by default; change if needed)
     temp_anchor = None
-    for cand in ["temp_r10","temp_r20","temp_r5","temp_r0"]:
+    for cand in ["temp_r100","temp_r200"]:
         if cand in gdf.columns:
             temp_anchor = cand; break
     if temp_anchor and PM_COL in gdf.columns:
