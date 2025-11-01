@@ -306,6 +306,13 @@ def main():
         trees = trees.explode(index_parts=False)
     trees = trees.reset_index(drop=True)
 
+    # --- Filter trees by height >= 10 m
+    if "height" not in trees.columns:
+        raise RuntimeError("Attribute 'height' not found in tree layer.")
+    trees = trees[trees["height"] >= 10].copy()
+    trees = trees.reset_index(drop=True)
+    print(f"[INFO] Trees retained after height filter (>=10 m): {len(trees)}")
+
     # --- PM2.5 (point) ---
     pm25_vals = sample_pm25_per_tree(PM25_RASTER_PATH, trees)
 

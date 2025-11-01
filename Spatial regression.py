@@ -292,7 +292,7 @@ def main():
     # 5) Make spatial folds
     #folds = make_spatial_folds(coords_all, n_folds=N_FOLDS, n_clusters=N_CLUSTERS,min_test_fract=TEST_MIN_FRACT, random_state=RANDOM_STATE)
     folds = make_random_folds(len(df), n_folds=N_FOLDS, random_state=RANDOM_STATE)
-    
+
     # Stores
     all_preds = []
     fold_metrics = []
