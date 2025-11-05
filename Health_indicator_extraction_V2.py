@@ -313,6 +313,13 @@ def main():
     trees = trees.reset_index(drop=True)
     print(f"[INFO] Trees retained after height filter (>=10 m): {len(trees)}")
 
+    # --- Filter trees by area >= 36 m --> this is 4 3x3 pixels
+    if "area" not in trees.columns:
+        raise RuntimeError("Attribute 'area' not found in tree layer.")
+    trees = trees[trees["area"] >= 36].copy()
+    trees = trees.reset_index(drop=True)
+    print(f"[INFO] Trees retained after height filter (>=10 m): {len(trees)}")
+
     # --- PM2.5 (point) ---
     pm25_vals = sample_pm25_per_tree(PM25_RASTER_PATH, trees)
 
