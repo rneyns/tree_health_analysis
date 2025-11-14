@@ -32,7 +32,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def gather_rasters(root):
     """Recursively list all .tif/.tiff files"""
-    exts = ("*.tif", "*.TIF", "*.tiff", "*.TIFF")
+    exts = ("*LST.tif", "*.TIF", "*.tiff", "*.TIFF")
     files = []
     for e in exts:
         files.extend(glob.iglob(os.path.join(root, "**", e), recursive=True))

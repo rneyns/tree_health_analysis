@@ -32,7 +32,7 @@ VERBOSE           = True
 
 # Downsampled outputs (50 cm)
 WRITE_DOWNSAMPLED = True
-TARGET_RES_METERS = 0.50      # CRS should be in meters; adjust if not
+TARGET_RES_METERS = 5      # CRS should be in meters; adjust if not
 # -----------------------------------------------------
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -152,15 +152,15 @@ def process_image(path):
             classes = sieve(classes,     size=SIEVE_MIN_PIXELS, connectivity=8)
 
         # Write QA indices (native)
-        write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_ndvi.tif"), ndvi, src.profile, dtype="float32", nodata=np.nan)
-        write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_ndwi.tif"), ndwi, src.profile, dtype="float32", nodata=np.nan)
-        write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_bsi.tif"),  bsi,  src.profile, dtype="float32", nodata=np.nan)
+        #write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_ndvi.tif"), ndvi, src.profile, dtype="float32", nodata=np.nan)
+        #write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_ndwi.tif"), ndwi, src.profile, dtype="float32", nodata=np.nan)
+        #write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_bsi.tif"),  bsi,  src.profile, dtype="float32", nodata=np.nan)
 
         # Write native-res masks
-        write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_impervious_5cm.tif"),
-                          imperv_u8, src.profile, dtype="uint8", nodata=OUT_NODATA_UINT8)
-        write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_classes_5cm.tif"),
-                          classes, src.profile, dtype="uint8", nodata=OUT_NODATA_UINT8)
+        #write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_impervious_5cm.tif"),
+        #                  imperv_u8, src.profile, dtype="uint8", nodata=OUT_NODATA_UINT8)
+        #write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_classes_5cm.tif"),
+        #                  classes, src.profile, dtype="uint8", nodata=OUT_NODATA_UINT8)
 
         if VERBOSE:
             total = imperv_u8.size
@@ -189,12 +189,12 @@ def process_image(path):
                 write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_impervious_50cm_frac.tif"),
                                   frac, src.profile, dtype="float32", nodata=np.nan,
                                   transform=new_transform, width=frac.shape[1], height=frac.shape[0])
-                write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_impervious_50cm_majority.tif"),
-                                  maj_imp, src.profile, dtype="uint8", nodata=OUT_NODATA_UINT8,
-                                  transform=new_transform, width=maj_imp.shape[1], height=maj_imp.shape[0])
-                write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_classes_50cm_majority.tif"),
-                                  maj_cls, src.profile, dtype="uint8", nodata=OUT_NODATA_UINT8,
-                                  transform=new_transform, width=maj_cls.shape[1], height=maj_cls.shape[0])
+                #write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_impervious_50cm_majority.tif"),
+                #                  maj_imp, src.profile, dtype="uint8", nodata=OUT_NODATA_UINT8,
+                #                  transform=new_transform, width=maj_imp.shape[1], height=maj_imp.shape[0])
+                #write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_classes_50cm_majority.tif"),
+                #                  maj_cls, src.profile, dtype="uint8", nodata=OUT_NODATA_UINT8,
+                #                  transform=new_transform, width=maj_cls.shape[1], height=maj_cls.shape[0])
                 if VERBOSE:
                     print(f"   50cm outputs → fraction, majority (imp), majority (classes)")
             else:
@@ -217,12 +217,12 @@ def process_image(path):
                 write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_impervious_50cm_frac.tif"),
                                   frac, src.profile, dtype="float32", nodata=np.nan,
                                   transform=new_transform, width=frac.shape[1], height=frac.shape[0])
-                write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_impervious_50cm_majority.tif"),
-                                  maj_imp, src.profile, dtype="uint8", nodata=OUT_NODATA_UINT8,
-                                  transform=new_transform, width=maj_imp.shape[1], height=maj_imp.shape[0])
-                write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_classes_50cm_majority.tif"),
-                                  maj_cls, src.profile, dtype="uint8", nodata=OUT_NODATA_UINT8,
-                                  transform=new_transform, width=maj_cls.shape[1], height=maj_cls.shape[0])
+                #write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_impervious_50cm_majority.tif"),
+                #                  maj_imp, src.profile, dtype="uint8", nodata=OUT_NODATA_UINT8,
+                #                  transform=new_transform, width=maj_imp.shape[1], height=maj_imp.shape[0])
+                #write_single_band(os.path.join(OUTPUT_DIR, f"{stem}_classes_50cm_majority.tif"),
+                #                  maj_cls, src.profile, dtype="uint8", nodata=OUT_NODATA_UINT8,
+                #                  transform=new_transform, width=maj_cls.shape[1], height=maj_cls.shape[0])
 
 def main():
     files = list_tifs(INPUT_DIR)

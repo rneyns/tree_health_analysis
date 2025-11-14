@@ -32,12 +32,12 @@ from sklearn.cluster import MiniBatchKMeans
 # ------------------- CONFIG -------------------
 METRICS_CSV     = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/ndvi_metrics_clean.csv'
 TARGET_COL      = "auc_above_base_full"
-FEATURE_COLS    = ["pm25","impervious_r10","impervious_r20","impervious_r50","impervious_r100","temp_r100","temp_r200", "ndvi_base"]
+FEATURE_COLS    = ["pm25","impervious_r10","impervious_r20","impervious_r50","impervious_r100","temp_r100","temp_r200"]
 LON_COL         = "lon"
 LAT_COL         = "lat"
 
 # Tree layer used to fetch lon/lat by ID
-TREE_LAYER_PATH = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/tree layers/Tilia_x_euchlora.shp'
+TREE_LAYER_PATH = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/tree layers/platanus_x_acerifolia.shp'
 TREE_LAYER_NAME = None
 CSV_ID_COL      = "tree_id"
 LAYER_ID_COL    = "crown_id"

@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 from scipy.optimize import least_squares
 
 # --------------------------- CONFIG ---------------------------
-TREE_LAYER_PATH   = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/tree layers/Tilia_x_euchlora.shp'
+TREE_LAYER_PATH   = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/tree layers/platanus_x_acerifolia.shp'
 TREE_LAYER_NAME   = None
 
 NDVI_DIR          = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/Planet_ndvi'
@@ -40,7 +40,7 @@ METRICS_CSV_NAME  = "/Users/robbe_neyns/Documents/Work_local/research/UHI tree h
 PM25_RASTER_PATH  = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/Raster_pm25_Brussel.gpkg'
 
 # Impervious fraction raster (0..1 or 0..100). Will output 0..1.
-IMPERVIOUS_RASTER_PATH = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/imperviousness/DW_built_fraction_Brussels_2024-01-01_2024-12-31.tif'
+IMPERVIOUS_RASTER_PATH = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/impervious_out/merged_impervious.tif'
 IMPERVIOUS_BUFFERS_M   = [10, 20, 50, 100]  # meters; 0 = point, others = circular mean
 
 # Temperature raster (single band). Values in K or °C are supported.
@@ -305,6 +305,7 @@ def main():
     if "MultiPoint" in trees.geometry.geom_type.unique():
         trees = trees.explode(index_parts=False)
     trees = trees.reset_index(drop=True)
+    print(f"Total number of trees before filtering: {len(trees)}")
 
     # --- Filter trees by height >= 10 m
     if "height" not in trees.columns:
