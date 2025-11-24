@@ -39,6 +39,11 @@ METRICS_CSV_NAME  = "/Users/robbe_neyns/Documents/Work_local/research/UHI tree h
 # Single-band PM2.5 raster (point sample)
 PM25_RASTER_PATH  = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/Raster_pm25_Brussel.gpkg'
 
+# Folder with multiple pollution rasters (each single-band)
+POLLUTION_DIR   = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/pollution_layers'
+POLLUTION_GLOB  = '*.tif'   # adapt if needed (e.g. '*.gpkg' or specific prefix)
+
+
 # Impervious fraction raster (0..1 or 0..100). Will output 0..1.
 IMPERVIOUS_RASTER_PATH = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/impervious_out/merged_impervious.tif'
 IMPERVIOUS_BUFFERS_M   = [10, 20, 50, 100]  # meters; 0 = point, others = circular mean
@@ -155,6 +160,40 @@ def sample_pm25_per_tree(pm25_path, trees_gdf):
         vals = [float(s[0]) if (s is not None and len(s) > 0) else np.nan
                 for s in rio_sample(src, coords)]
     return vals
+
+def sample_singleband_raster_per_tree(raster_path, trees_gdf):
+    """Sample a single-band raster once per tree (point sample)."""
+    with rasterio.open(raster_path) as src:
+        pts = trees_gdf.to_crs(src.crs) if str(trees_gdf.crs) != str(src.crs) else trees_gdf
+        coords = []
+        for geom in pts.geometry:
+            if geom.geom_type == "MultiPoint":
+                coords.append((geom.geoms[0].x, geom.geoms[0].y) if len(geom.geoms) else (np.nan, np.nan))
+            else:
+                coords.append((geom.x, geom.y))
+        vals = [
+            float(s[0]) if (s is not None and len(s) > 0) else np.nan
+            for s in rio_sample(src, coords)
+        ]
+    return vals
+
+def sample_pollution_folder(pollution_dir, pattern, trees_gdf):
+    """
+    Sample all single-band pollution rasters in a folder.
+    Returns dict: {short_name: [values per tree]}.
+    short_name = filename without extension, cleaned a bit for column names.
+    """
+    poll_files = sorted(glob(os.path.join(pollution_dir, pattern)))
+    out = {}
+    for path in poll_files:
+        base = os.path.basename(path)
+        short = os.path.splitext(base)[0]
+        # Optional: make sure column-name-friendly
+        short = re.sub(r'\W+', '_', short)
+        print(f"[POLL] Sampling {base}")
+        out[short] = sample_singleband_raster_per_tree(path, trees_gdf)
+    return out
+
 # ---------------------------------------------------------
 
 
@@ -321,8 +360,16 @@ def main():
     trees = trees.reset_index(drop=True)
     print(f"[INFO] Trees retained after area filter (>=36 m): {len(trees)}")
 
-    # --- PM2.5 (point) ---
-    pm25_vals = sample_pm25_per_tree(PM25_RASTER_PATH, trees)
+    # --- Pollution rasters (point samples) ---
+    # If you still want the dedicated PM2.5 raster:
+    # pm25_vals = sample_pm25_per_tree(PM25_RASTER_PATH, trees)
+
+    pollution_by_layer = sample_pollution_folder(
+        POLLUTION_DIR,
+        POLLUTION_GLOB,
+        trees
+    )
+    print("[OK] Pollution layers sampled:", list(pollution_by_layer.keys()))
 
     # --- Impervious multi-buffers ---
     imperv_by_r = sample_impervious_multi_buffers(
@@ -523,7 +570,12 @@ def main():
         rmse  = float(np.sqrt(np.nanmean((resid)**2))) if resid.size else np.nan
         iqr   = float(np.nanpercentile(resid, 75) - np.nanpercentile(resid, 25)) if resid.size else np.nan
 
-        # --- Assemble row ---
+        # stressors: generic pollution rasters (one column per file)
+        for short_name, vals in pollution_by_layer.items():
+            colname = f"poll_{short_name}"
+            row[colname] = vals[tid] if tid < len(vals) else np.nan
+
+
         row = {
             "tree_id": trees[id_field].iloc[tid] if id_field else tid,
             # timings
@@ -543,7 +595,7 @@ def main():
             "decline_days": round(decline_days, 3),
             # rates / shapes
             "slope_sos_peak": round(slope_sos_peak, 9),
-            "senescence_rate": round(senescence_rate, 9),   # NDVI/day (negative)
+            "senescence_rate": round(senescence_rate, 9),
             "asymmetry": round(asymmetry, 6),
             "mean_senescence_rate": round(mean_senescence_rate, 9),
             # integrals
@@ -554,9 +606,12 @@ def main():
             # fit quality
             "rmse": round(rmse, 6),
             "resid_iqr": round(iqr, 6),
-            # stressors
-            "pm25": pm25_vals[tid] if (tid < len(pm25_vals) and pm25_vals[tid] is not None) else np.nan,
         }
+
+        # attach pollution rasters (one column per file)
+        for short_name, vals in pollution_by_layer.items():
+            colname = f"poll_{short_name}"
+            row[colname] = vals[tid] if tid < len(vals) else np.nan
 
         # attach impervious per radius
         for r in IMPERVIOUS_BUFFERS_M:
@@ -567,6 +622,7 @@ def main():
         for r in TEMP_BUFFERS_M:
             vals = temp_by_r[r]
             row[temp_cols[r]] = vals[tid] if tid < len(vals) else np.nan
+
 
         metrics_rows.append(row)
 
