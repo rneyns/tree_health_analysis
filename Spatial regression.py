@@ -31,8 +31,8 @@ from sklearn.cluster import MiniBatchKMeans
 
 # ------------------- CONFIG -------------------
 METRICS_CSV     = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/ndvi_metrics_clean.csv'
-TARGET_COL      = "auc_above_base_full"
-FEATURE_COLS    = ["pm25","impervious_r10","impervious_r20","impervious_r50","impervious_r100","temp_r100","temp_r200"]
+TARGET_COL      = "auc_full"
+FEATURE_COLS    = ["poll_pm25_anmean","poll_pm10_anmean","poll_no2_anmean","poll_bc_anmean","impervious_r10","impervious_r20","impervious_r50","impervious_r100","temp_r100","temp_r200"]
 LON_COL         = "lon"
 LAT_COL         = "lat"
 

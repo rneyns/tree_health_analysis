@@ -57,7 +57,7 @@ IRLS_REFINE      = True
 IRLS_ITERS       = 5
 
 # Savitzky–Golay settings (applied to a regular grid of length N_FIT_SAMPLES)
-SAVGOL_WINDOW    = 5   # must be odd, <= N_FIT_SAMPLES
+SAVGOL_WINDOW    = 111  # must be odd, <= N_FIT_SAMPLES --> this is also used on the interpolated curve so that's why window size needs to be so big (= 111 days)
 SAVGOL_POLYORDER = 3
 
 # Harmonic model settings

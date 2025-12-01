@@ -1,204 +1,90 @@
 #!/usr/bin/env python3
 """
-Compute shaded tree-top areas for a PlanetScope time series
-using an nDSM and solar geometry per date.
+Compute cast shadows from nDSM for each Planet composite using GRASS r.sunmask.
 
-Outputs:
-- One shade-on-trees GeoTIFF per date
-- A CSV summary of shaded fraction of tree canopy per date
+For each composite in the Planet metadata CSV:
+- Average sun azimuth / elevation per composite_id
+- Run GRASS r.sunmask with those angles
+- Export a GeoTIFF:
+    shadow_trees_<composite_image_id>.tif
+
+These outputs can then be used in your NDVI phenology script to sample
+per-tree shade profiles.
 """
 
-import numpy as np
-import pandas as pd
-import rasterio
-from rasterio.transform import Affine
+import subprocess
 from pathlib import Path
-from rasterio.crs import CRS
+import re
 
-# =========================
-# CONFIG
-# =========================
+import pandas as pd
 
-# Path to nDSM (heights of objects, m)
-NDSM_PATH = Path('/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Shadow analysis/ndsm.tif')
+# ===================== CONFIG =====================
 
-# Path to tree canopy mask (1 = tree canopy, 0 = non-tree)
-TREE_MASK_PATH = Path('/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Shadow analysis/tree crown mask 3.tif')
+# Path to GRASS executable (from Homebrew or your symlink)
+GRASS_BIN = "/opt/local/bin/grass"   # change to "grass8" etc. if needed
 
-# CSV produced by the Planet API search script
-# (with columns like: composite_image_id, composite_date, sun_azimuth_deg, sun_elevation_deg, ...)
-PLANET_META_CSV_PATH = Path('/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Shadow analysis/planetscope_sun_geometry_from_api.csv')
+# GRASS database/location/mapset you created earlier
+GISDBASE = Path("/Users/robbe_neyns/grassdata")
+MAPSET   = "PERMANENT"
 
-# Output directory for shadow rasters + summary CSV
-OUTPUT_DIR = Path('/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Shadow analysis/shadow rasters')
+# Elevation raster name INSIDE GRASS (the nDSM you imported with r.in.gdal)
+ELEV_MAP = "ndsm_31370"
+
+# Planet metadata CSV (original file with per-scene sun angles)
+PLANET_META_CSV_PATH = Path(
+    "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Shadow analysis/planetscope_sun_geometry_from_api.csv"
+)
+
+# Column names in the Planet metadata CSV
+COL_COMP_ID   = "composite_image_id"
+COL_COMP_DATE = "composite_date"
+COL_AZ        = "sun_azimuth_deg"
+COL_EL        = "sun_elevation_deg"
+COL_SCENE_ID  = "scene_id"
+COL_CLOUD     = "cloud_cover"
+
+# Output directory for cast-shadow rasters
+OUTPUT_DIR = Path(
+    "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Shadow analysis/shadow rasters"
+)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Optional: summary CSV of shaded fraction per composite
-SUMMARY_CSV_PATH = OUTPUT_DIR / "shadow_summary_per_composite.csv"
+# Optional: save averaged per-composite sun geometry
+OUT_AVG_CSV = OUTPUT_DIR / "planetscope_sun_geometry_averaged_per_composite.csv"
 
-# Name of columns in the Planet metadata CSV
-COL_COMP_ID = "composite_image_id"
-COL_COMP_DATE = "composite_date"
-COL_AZ = "sun_azimuth_deg"
-COL_EL = "sun_elevation_deg"
-COL_SCENE_ID = "scene_id"
-COL_CLOUD = "cloud_cover"
+# ==================================================
 
 
-# =========================
-# HELPER FUNCTIONS
-# =========================
-
-def load_single_band_raster(path):
-    """Load a single-band raster as float32 array + profile."""
-    with rasterio.open(path) as src:
-        arr = src.read(1).astype("float32")
-        profile = src.profile
-    return arr, profile
-
-
-def compute_slope_aspect(ndsm, transform):
+def run_grass_module(args):
     """
-    Compute slope and aspect (radians) from nDSM using a 3x3 finite difference kernel.
+    Run a GRASS module via 'grass --exec'.
 
-    Returns:
-    - slope: 0 (flat) .. pi/2 (vertical)
-    - aspect: 0 = north, pi/2 = east, pi = south, 3*pi/2 = west
+    args: list of strings, e.g.
+        ["r.sunmask", "elevation=...", "output=...", "azimuth=...", "altitude=..."]
     """
-    if not isinstance(transform, Affine):
-        transform = Affine(*transform)
-
-    cellsize_x = transform.a
-    cellsize_y = -transform.e  # transform.e is negative for north-up
-
-    z = ndsm.copy()
-    z[np.isinf(z)] = np.nan
-    # Fill NaNs with median to avoid weird edges
-    z = np.where(np.isnan(z), np.nanmedian(z), z)
-
-    # Horn's method
-    # z1 z2 z3
-    # z4 z5 z6
-    # z7 z8 z9
-    z1 = z[:-2, :-2]
-    z2 = z[:-2, 1:-1]
-    z3 = z[:-2, 2:]
-    z4 = z[1:-1, :-2]
-    z5 = z[1:-1, 1:-1]
-    z6 = z[1:-1, 2:]
-    z7 = z[2:, :-2]
-    z8 = z[2:, 1:-1]
-    z9 = z[2:, 2:]
-
-    dzdx = ((z3 + 2 * z6 + z9) - (z1 + 2 * z4 + z7)) / (8 * cellsize_x)
-    dzdy = ((z7 + 2 * z8 + z9) - (z1 + 2 * z2 + z3)) / (8 * cellsize_y)
-
-    slope = np.full_like(z, np.nan, dtype="float32")
-    aspect = np.full_like(z, np.nan, dtype="float32")
-
-    slope_core = np.arctan(np.hypot(dzdx, dzdy))
-    slope[1:-1, 1:-1] = slope_core
-
-    # Aspect: clockwise from north
-    aspect_core = np.arctan2(dzdy, -dzdx)
-    aspect_core = np.where(aspect_core < 0, 2 * np.pi + aspect_core, aspect_core)
-    aspect[1:-1, 1:-1] = aspect_core
-
-    return slope, aspect
+    locpath = GISDBASE / MAPSET
+    cmd = [GRASS_BIN, str(locpath), "--exec"] + args
+    print(">>", " ".join(str(x) for x in cmd))
+    subprocess.run(cmd, check=True)
 
 
-def compute_shadow_mask_on_trees(ndsm, tree_mask, transform,
-                                 sun_azimuth_deg, sun_elevation_deg,
-                                 ndsm_no_data_value=None):
+def sanitize_grass_name(name):
     """
-    Compute a binary shadow mask at tree-top level.
-
-    Approach:
-    - Compute slope and aspect from nDSM.
-    - Use standard hillshade illumination model.
-    - Pixel is "shaded" if cos(i) <= 0 (no direct sun) and it is a tree pixel.
-
-    Returns:
-    - shadow_on_trees: uint8 (1 = shaded tree pixel, 0 = sunlit tree or non-tree)
+    Make a safe GRASS raster name: letters, digits, and underscores only.
     """
-    ndsm = ndsm.astype("float32")
-    if ndsm_no_data_value is not None:
-        ndsm = np.where(ndsm == ndsm_no_data_value, np.nan, ndsm)
+    # GRASS likes names starting with a letter; prefix if needed
+    name = re.sub(r"[^\w]", "_", str(name))
+    if not re.match(r"^[A-Za-z]", name):
+        name = "r_" + name
+    return name
 
-    slope, aspect = compute_slope_aspect(ndsm, transform)
-
-    azimuth_rad = np.deg2rad(sun_azimuth_deg)
-    elevation_rad = np.deg2rad(sun_elevation_deg)
-    zenith_rad = np.deg2rad(90.0 - sun_elevation_deg)
-
-    # cos(i) = cos(zenith)*cos(slope) + sin(zenith)*sin(slope)*cos(azimuth - aspect)
-    cos_i = (
-        np.cos(zenith_rad) * np.cos(slope) +
-        np.sin(zenith_rad) * np.sin(slope) * np.cos(azimuth_rad - aspect)
-    )
-
-    # Where slope/aspect are NaN, treat as shaded (no direct illumination)
-    cos_i = np.where(np.isnan(cos_i), -1.0, cos_i)
-
-    shaded = cos_i <= 0.0
-
-    tree_mask_bool = tree_mask.astype(bool)
-    shadow_on_trees = np.zeros_like(tree_mask, dtype="uint8")
-    shadow_on_trees[tree_mask_bool & shaded] = 1
-
-    return shadow_on_trees
-
-
-def write_geotiff(output_path, data, reference_profile, dtype="uint8", nodata=0):
-    """Write 2D array to GeoTIFF using a reference profile."""
-    profile = reference_profile.copy()
-    profile.update(
-        dtype=dtype,
-        count=1,
-    )
-    if nodata is not None:
-        profile.update(nodata=nodata)
-
-    with rasterio.open(output_path, "w", **profile) as dst:
-        dst.write(data.astype(dtype), 1)
-
-
-# =========================
-# MAIN
-# =========================
 
 def main():
-    print("Loading nDSM...")
-    ndsm, ndsm_profile = load_single_band_raster(NDSM_PATH)
-    transform = ndsm_profile["transform"]
-    ndsm_nodata = ndsm_profile.get("nodata", None)
-
-    print("Loading tree canopy mask...")
-    tree_mask, tree_profile = load_single_band_raster(TREE_MASK_PATH)
-
-    # Ensure tree mask matches nDSM grid
-    print("Checking tree mask grid matches nDSM grid...")
-    print(f"Tree mask grid: {tree_profile['crs']}, {tree_profile['transform']}, {tree_profile['width']}x{tree_profile['height']}")
-    print(f"nDSM grid: {ndsm_profile['crs']}, {ndsm_profile['transform']}, {ndsm_profile['width']}x{ndsm_profile['height']}")
-
-
-    # OPTIONAL: derive tree mask from nDSM if you don't have one
-    # Example: trees where height > 3 m
-    # tree_mask = (ndsm > 3.0).astype("uint8")
-
-    # Compute total tree pixels once
-    tree_pixels_total = int(tree_mask.astype(bool).sum())
-    if tree_pixels_total == 0:
-        raise ValueError("Tree mask has zero tree pixels (no value == 1).")
-
-    print(f"Total tree pixels in mask: {tree_pixels_total}")
-
-    # --- Read Planet metadata CSV and average per composite ---
-
+    # ---- 1) Load metadata ----
     if not PLANET_META_CSV_PATH.exists():
         raise FileNotFoundError(f"Planet metadata CSV not found: {PLANET_META_CSV_PATH}")
 
-    print(f"Loading Planet metadata from {PLANET_META_CSV_PATH}...")
+    print(f"[INFO] Reading Planet metadata: {PLANET_META_CSV_PATH}")
     meta_df = pd.read_csv(PLANET_META_CSV_PATH)
 
     # Basic column checks
@@ -209,13 +95,10 @@ def main():
 
     # Drop rows with missing sun angles
     meta_df = meta_df.dropna(subset=[COL_AZ, COL_EL])
-
     if meta_df.empty:
         raise ValueError("No valid rows with sun azimuth/elevation in metadata CSV.")
 
-    # Average sun angles per composite
-    # (simple arithmetic mean; fine if angles are close together in time)
-    print("Averaging sun geometry per composite...")
+    # ---- 2) Average sun angles per composite ----
     grouped = (
         meta_df
         .groupby([COL_COMP_ID, COL_COMP_DATE], dropna=False)
@@ -237,71 +120,59 @@ def main():
     if grouped.empty:
         raise ValueError("Grouped metadata is empty after aggregation.")
 
-    print(f"Found {len(grouped)} composites with averaged sun geometry.")
+    print(f"[INFO] Found {len(grouped)} composites with averaged sun geometry.")
 
-    # Optionally, save the averaged angles as a helper CSV
-    averaged_csv_path = OUTPUT_DIR / "planetscope_sun_geometry_averaged_per_composite.csv"
-    grouped.to_csv(averaged_csv_path, index=False)
-    print(f"Saved averaged sun geometry per composite to: {averaged_csv_path}")
+    if OUT_AVG_CSV is not None:
+        grouped.to_csv(OUT_AVG_CSV, index=False)
+        print(f"[INFO] Saved averaged sun geometry per composite to: {OUT_AVG_CSV}")
 
-    results = []
+    # ---- 3) Ensure GRASS region matches the nDSM ----
+    print("[INFO] Setting GRASS region to elevation raster...")
+    run_grass_module(["g.region", f"raster={ELEV_MAP}", "-p"])
 
-    # --- Main loop over composites ---
+    # ---- 4) Loop over composites and run r.sunmask + export ----
     for idx, row in grouped.iterrows():
         image_id = str(row[COL_COMP_ID])
         date_val = row[COL_COMP_DATE]
-        az_deg = float(row["mean_sun_azimuth_deg"])
-        el_deg = float(row["mean_sun_elevation_deg"])
+        az_deg   = float(row["mean_sun_azimuth_deg"])
+        el_deg   = float(row["mean_sun_elevation_deg"])
         n_scenes = int(row["n_scenes"])
         mean_cloud = row["mean_cloud_cover"]
 
         print(
-            f"\nProcessing composite {image_id} (date: {date_val}, "
-            f"mean azimuth={az_deg:.2f}°, mean elevation={el_deg:.2f}°, "
-            f"n_scenes={n_scenes}, mean_cloud={mean_cloud:.3f})..."
+            f"\n[COMPOSITE] {image_id} "
+            f"(date={date_val}, az={az_deg:.2f}°, el={el_deg:.2f}°, "
+            f"n_scenes={n_scenes}, mean_cloud={mean_cloud:.3f})"
         )
 
-        shadow_on_trees = compute_shadow_mask_on_trees(
-            ndsm=ndsm,
-            tree_mask=tree_mask,
-            transform=transform,
-            sun_azimuth_deg=az_deg,
-            sun_elevation_deg=el_deg,
-            ndsm_no_data_value=ndsm_nodata,
-        )
+        # Internal GRASS raster name (must be safe)
+        grass_shadow_name = sanitize_grass_name(f"shadow_{image_id}")
 
-        # Save raster
-        ndsm_profile["crs"] = CRS.from_epsg(31370)
-        out_path = OUTPUT_DIR / f"shadow_trees_{image_id}.tif"
-        write_geotiff(out_path, shadow_on_trees, ndsm_profile, dtype="uint8", nodata=0)
-        print(f"  -> Saved shadow mask to: {out_path}")
+        # 4a) Compute cast-shadow map with r.sunmask
+        #     altitude = sun elevation (degrees above horizon)
+        run_grass_module([
+            "r.sunmask",
+            f"elevation={ELEV_MAP}",
+            f"output={grass_shadow_name}",
+            f"azimuth={az_deg}",
+            f"altitude={el_deg}",
+            "--overwrite",
+        ])
 
-        # Compute summary stats
-        shaded_tree_pixels = int((shadow_on_trees == 1).sum())
-        shaded_fraction = shaded_tree_pixels / tree_pixels_total
+        # 4b) Export to GeoTIFF with the desired file name
+        out_tif = OUTPUT_DIR / f"shadow_trees_{image_id}.tif"
+        run_grass_module([
+            "r.out.gdal",
+            f"input={grass_shadow_name}",
+            f"output={out_tif}",
+            "format=GTiff",
+            "createopt=COMPRESS=LZW",
+            "--overwrite",
+        ])
 
-        print(
-            f"  -> Shaded tree pixels: {shaded_tree_pixels} "
-            f"({shaded_fraction:.3%} of canopy)"
-        )
+        print(f"[OK] Wrote cast-shadow raster to: {out_tif}")
 
-        results.append({
-            "composite_image_id": image_id,
-            "composite_date": date_val,
-            "mean_sun_azimuth_deg": az_deg,
-            "mean_sun_elevation_deg": el_deg,
-            "n_scenes": n_scenes,
-            "mean_cloud_cover": mean_cloud,
-            "tree_pixels_total": tree_pixels_total,
-            "shaded_tree_pixels": shaded_tree_pixels,
-            "shaded_fraction": shaded_fraction,
-        })
-
-    # Save summary CSV
-    if SUMMARY_CSV_PATH is not None:
-        summary_df = pd.DataFrame(results)
-        summary_df.to_csv(SUMMARY_CSV_PATH, index=False)
-        print(f"\nWrote shaded canopy summary to: {SUMMARY_CSV_PATH}")
+    print("\n[DONE] All composites processed.")
 
 
 if __name__ == "__main__":

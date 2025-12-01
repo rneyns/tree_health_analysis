@@ -55,8 +55,8 @@ SAVE_DOY_MAPPING  = True
 
 # Robust fitting
 ROBUST_LOSS       = "soft_l1"
-ROBUST_F_SCALE    = 0.05
-IRLS_REFINE       = True
+ROBUST_F_SCALE    = 1
+IRLS_REFINE       = False
 IRLS_ITERS        = 3
 
 # Sampling density for metrics/plots

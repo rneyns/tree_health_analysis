@@ -62,10 +62,11 @@ def ensure_dir(p):
 def find_columns(df):
     """Identify phenology metrics (dependent candidates) and stressor columns."""
     # Stressors
-    stress_pm25 = ["pm25"] if "pm25" in df.columns else []
+    stress_poll = [c for c in df.columns if c.startswith("poll")]
     stress_imperv = [c for c in df.columns if c.startswith("impervious_r")]
     stress_temp   = [c for c in df.columns if c.startswith("temp_r")]
-    stressors = stress_pm25 + sorted(stress_imperv) + sorted(stress_temp)
+    lst_stress_temp = [c for c in df.columns if c.startswith("lst_temp")]
+    stressors = sorted(lst_stress_temp) + (stress_poll) + sorted(stress_imperv) + sorted(stress_temp)
 
     # Phenology metrics (common names from your script)
     phenology_candidates = [
