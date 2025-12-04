@@ -43,7 +43,7 @@ from sklearn.model_selection import KFold, cross_val_score
 from sklearn.inspection import permutation_importance
 
 # --------------------------- CONFIG ---------------------------
-METRICS_CSV = "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/ndvi_metrics_clean.csv"
+METRICS_CSV = "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/acer pseudoplatanus/ndvi_metrics_clean.csv"
 OUT_DIR     = "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Results/screening"
 
 # RF settings
@@ -66,7 +66,8 @@ def find_columns(df):
     stress_imperv = [c for c in df.columns if c.startswith("impervious_r")]
     stress_temp   = [c for c in df.columns if c.startswith("temp_r")]
     lst_stress_temp = [c for c in df.columns if c.startswith("lst_temp")]
-    stressors = sorted(lst_stress_temp) + (stress_poll) + sorted(stress_imperv) + sorted(stress_temp)
+    stress_insolation = [c for c in df.columns if c.startswith("insolation")]
+    stressors = ['height','area'] + sorted(stress_insolation) + sorted(lst_stress_temp) + (stress_poll) + sorted(stress_imperv) + sorted(stress_temp)
 
     # Phenology metrics (common names from your script)
     phenology_candidates = [
@@ -166,6 +167,38 @@ def cv_r2_rf(df, ycol, Xcols, random_state=RANDOM_STATE, cv_folds=CV_FOLDS):
     top5_imp = [float(imp_series[c]) for c in top5]
     return mean_r2, top5, top5_imp
 
+def spearman_within(df, cols, min_n=10):
+    """
+    Compute a Spearman correlation matrix within a set of columns.
+    Uses pandas' corr(method='spearman') for robustness.
+    Only numeric columns are kept. Pairs with < min_n complete obs
+    are set to NaN.
+    """
+    # Keep only numeric columns that exist
+    numeric_cols = [
+        c for c in cols
+        if c in df.columns and pd.api.types.is_numeric_dtype(df[c])
+    ]
+    if not numeric_cols:
+        return pd.DataFrame()
+
+    # Clean infinities, keep only those columns
+    data = df[numeric_cols].replace([np.inf, -np.inf], np.nan)
+
+    # First compute full Spearman correlation with pandas (safe)
+    corr = data.corr(method="spearman")
+
+    # Enforce minimum n per pair (optional but close to what you wanted)
+    if min_n is not None and min_n > 1:
+        for c1 in numeric_cols:
+            for c2 in numeric_cols:
+                m = data[[c1, c2]].dropna()
+                if len(m) < min_n:
+                    corr.loc[c1, c2] = np.nan
+
+    return corr
+
+
 
 def quick_plots(rho_mat, perf_df, out_dir):
     ensure_dir(out_dir)
@@ -209,6 +242,14 @@ def main():
 
     print(f"[INFO] Phenology metrics ({len(phenology)}): {phenology}")
     print(f"[INFO] Stressors ({len(stressors)}): {stressors}")
+
+    # A) Correlation matrices within phenology and within stressors
+    phenology_rho_within = spearman_within(df, phenology)
+    phenology_rho_within.to_csv(os.path.join(OUT_DIR, "spearman_corr_matrix_phenology.csv"))
+
+    stressor_rho_within = spearman_within(df, stressors)
+    stressor_rho_within.to_csv(os.path.join(OUT_DIR, "spearman_corr_matrix_stressors.csv"))
+
 
     # 1) Spearman correlations
     rho_mat, p_mat, long = spearman_matrix(df, phenology, stressors)

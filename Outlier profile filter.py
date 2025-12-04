@@ -4,10 +4,10 @@ import pandas as pd
 import numpy as np
 
 # ============== CONFIG (tweak as needed) ==============
-METRICS_CSV = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/ndvi_metrics.csv'         # input
-CLEAN_CSV   = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/ndvi_metrics_clean.csv'   # output: good rows
-BAD_CSV     = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/ndvi_metrics_bad.csv'      # output: flagged rows
-REPORT_TXT  = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/ndvi_metrics_filter_report.txt'
+METRICS_CSV = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/acer pseudoplatanus/ndvi_metrics.csv'         # input
+CLEAN_CSV   = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/acer pseudoplatanus/ndvi_metrics_clean.csv'   # output: good rows
+BAD_CSV     = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/acer pseudoplatanus/ndvi_metrics_bad.csv'      # output: flagged rows
+REPORT_TXT  = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/acer pseudoplatanus/ndvi_metrics_filter_report.txt'
 
 # Hard plausibility window for SOS (DOY) — temperate Europe
 SOS_DOY_MIN = 80    # ~ March 1

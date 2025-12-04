@@ -35,15 +35,18 @@ from scipy.signal import find_peaks
 
 
 # --------------------------- CONFIG ---------------------------
-TREE_LAYER_PATH   = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/tree layers/platanus_x_acerifolia.shp'
+OUTPUT_DIR        = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/acer pseudoplatanus'
+
+TREE_LAYER_PATH   = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/tree layers/Acer_psuedoplatanus.shp'
 TREE_LAYER_NAME   = None
+OUTPUT_TREE_LAYER_PATH = os.path.join(OUTPUT_DIR, "trees_with_pheno.gpkg")
+
 
 NDVI_DIR          = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/Planet_ndvi'
 NDVI_GLOB         = "*_ndvi.tif"
 
-OUTPUT_DIR        = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope'
 WIDE_CSV_NAME     = "ndvi_samples_wide.csv"
-METRICS_CSV_NAME  = "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/ndvi_metrics.csv"
+METRICS_CSV_NAME  = OUTPUT_DIR + "/ndvi_metrics.csv"
 
 # Tree-top shadow rasters (one per composite) from the other script
 SHADOW_DIR        = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Shadow analysis/shadow rasters'
@@ -69,8 +72,12 @@ TEMP_RASTER_PATH   = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree 
 TEMP_BUFFERS_M     = [100, 200]      # meters; 0 = point sample
 
 # Temperature raster from LST (single band). Values in K or °C are supported.
-LST_TEMP_RASTER_PATH   = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/LST landsat composite/20230606_103337.LST.tif'
+LST_TEMP_RASTER_PATH   = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/LST landsat composite/20230614_103335_ST_B10_lambert.tif'
 LST_TEMP_BUFFERS_M     = [50, 100, 200]      # meters; 0 = point sample
+
+# Insolation raster
+INSOLATION_RASTER_PATH   = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Shadow analysis/insol_gs.tif'
+INS_BUFFERS_M     = [3, 9]      # meters; 0 = point sample
 
 AUTO_SCALE_10000  = True
 MIN_OBS_TO_FIT    = 6
@@ -573,6 +580,12 @@ def main():
     )
     print("[OK] Temperature buffers (m):", TEMP_BUFFERS_M)
 
+    # --- LST Temperature multi-buffers (°C) ---
+    insolation_by_r = sample_temperature_multi_buffers(
+        INSOLATION_RASTER_PATH, trees, buffers_m=INS_BUFFERS_M
+    )
+    print("[OK] insolation buffers (m):", INS_BUFFERS_M)
+
     # 2) NDVI rasters + dates
     ndvi_files = sorted(glob(os.path.join(NDVI_DIR, NDVI_GLOB)))
     dated = []
@@ -662,6 +675,11 @@ def main():
          for i in range(n_trees)],
         columns=col_names
     )
+
+    # Attach tree point attributes
+    df_wide["height"] = trees["height"].values
+    df_wide["area"] = trees["area"].values
+
     df_wide.to_csv(wide_csv_path, index=False)
     print(f"[OK] Saved wide CSV: {wide_csv_path}")
 
@@ -676,6 +694,7 @@ def main():
     imperv_cols = {r: f"impervious_r{int(r) if float(r).is_integer() else r}" for r in IMPERVIOUS_BUFFERS_M}
     temp_cols   = {r: f"temp_r{int(r) if float(r).is_integer() else r}"       for r in TEMP_BUFFERS_M}
     LST_temp_cols = {r: f"lst_temp_r{int(r) if float(r).is_integer() else r}" for r in LST_TEMP_BUFFERS_M}
+    insolation_cols = {r: f"insolation{int(r) if float(r).is_integer() else r}" for r in INS_BUFFERS_M}
 
     for tid in range(n_trees):
         t = np.asarray(per_tree_t[tid], dtype=float)
@@ -786,6 +805,8 @@ def main():
 
         row = {
             "tree_id": trees[id_field].iloc[tid] if id_field else tid,
+            "height": float(trees["height"].iloc[tid]),
+            "area": float(trees["area"].iloc[tid]),
             # timings
             "greenup_doy": round(gu_doy, 3),
             "sos_doy": round(sos_doy, 3),
@@ -844,6 +865,11 @@ def main():
             vals = LST_temp_by_r[r]
             row[LST_temp_cols[r]] = vals[tid] if tid < len(vals) else np.nan
 
+        # attach insolation per radius (°C)
+        for r in INS_BUFFERS_M:
+            vals = insolation_by_r[r]
+            row[insolation_cols[r]] = vals[tid] if tid < len(vals) else np.nan
+
         metrics_rows.append(row)
 
         # Plot NDVI + 3rd derivative for debugging SOS
@@ -893,7 +919,34 @@ def main():
     df_metrics.to_csv(METRICS_CSV_NAME, index=False)
     print(f"[OK] Saved metrics CSV with stressor columns "
           f"{list(imperv_cols.values()) + list(temp_cols.values())}: {METRICS_CSV_NAME}")
+
+    # ---------------------------------------------------------
+    # Join phenology + environmental metrics back to tree layer
+    # ---------------------------------------------------------
+    if "tree_id" not in df_metrics.columns:
+        raise RuntimeError("df_metrics does not contain 'tree_id' column; cannot join to trees.")
+
+    # Merge on the same ID field you used when building metrics_rows
+    # (tree_id = trees[id_field] for each tid)
+    if id_field is not None:
+        trees_with_metrics = trees.merge(
+            df_metrics,
+            how="left",
+            left_on=id_field,
+            right_on="tree_id"
+        )
+    else:
+        # Fallback: join on row index if no explicit ID field exists
+        trees_with_metrics = trees.join(
+            df_metrics.set_index("tree_id"),
+            how="left"
+        )
+
+    # Save updated tree layer with all metrics + stressors as attributes
+    trees_with_metrics.to_file(OUTPUT_TREE_LAYER_PATH, driver="GPKG")
+    print(f"[OK] Saved tree layer with phenology metrics and environmental variables: {OUTPUT_TREE_LAYER_PATH}")
     print("[Done]")
+
 
 
 if __name__ == "__main__":
