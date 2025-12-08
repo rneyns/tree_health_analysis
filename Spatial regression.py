@@ -3,15 +3,16 @@
 GRF vs RF with Spatial K-fold Cross-Validation
 
 - Joins lon/lat from tree layer by ID (CSV: tree_id, Layer: crown_id)
-- Spatial K-fold CV via coordinate clustering (MiniBatchKMeans)
+- Spatial K-fold CV via coordinate clustering (MiniBatchKMeans) or random CV
 - RF baseline and GRF (RAM-aware) trained only on TRAIN folds
 - Reports per-fold and aggregated TEST metrics + Moran's I for residuals
 
 Outputs (in OUTPUT_DIR)
 -----------------------
-- cv_predictions_residuals.csv         (per tree per fold with split flag)
-- cv_fold_metrics.csv                  (metrics per fold/model)
-- cv_summary.txt                       (mean±std metrics + chosen GRF params ranges)
+- cv_predictions_residuals.csv           (per validation tree per fold with split flag)
+- cv_validation_points.gpkg              (vector layer of validation points for QGIS)
+- cv_fold_metrics.csv                    (metrics per fold/model)
+- cv_summary.txt                         (mean±std metrics + chosen GRF params ranges)
 - residual_hist_{rf,grf}_fold1_test.png
 - obs_vs_pred_{rf,grf}_fold1_test.png
 - residuals_map_grf_fold1_test.png
@@ -28,11 +29,16 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import r2_score, mean_absolute_error
 from sklearn.inspection import PartialDependenceDisplay
 from sklearn.cluster import MiniBatchKMeans
+from sklearn.model_selection import KFold
 
 # ------------------- CONFIG -------------------
-METRICS_CSV     = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/ndvi_metrics_clean.csv'
-TARGET_COL      = "auc_full"
-FEATURE_COLS    = ["poll_pm25_anmean","poll_pm10_anmean","poll_no2_anmean","poll_bc_anmean","impervious_r10","impervious_r20","impervious_r50","impervious_r100","temp_r100","temp_r200"]
+METRICS_CSV     = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/platanus x acerifolia/ndvi_metrics_clean.csv'
+TARGET_COL      = "auc_above_base_full"
+FEATURE_COLS    = [
+    "height","poll_pm25_anmean","poll_pm10_anmean","poll_no2_anmean","poll_bc_anmean",
+    "impervious_r10","impervious_r20","impervious_r50","impervious_r100",
+    "temp_r100","temp_r200"
+]
 LON_COL         = "lon"
 LAT_COL         = "lat"
 
@@ -42,12 +48,12 @@ TREE_LAYER_NAME = None
 CSV_ID_COL      = "tree_id"
 LAYER_ID_COL    = "crown_id"
 
-OUTPUT_DIR      = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/spatial regression'
+OUTPUT_DIR      = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/spatial regression/platanus x acerifolia'
 
 # Spatial K-fold
-N_FOLDS         = 10        # number of spatial folds
-N_CLUSTERS      = 60       # number of spatial clusters used to define folds
-TEST_MIN_FRACT  = 0.15     # aim ~1/N_FOLDS; this is a lower bound per held cluster pack
+N_FOLDS         = 10        # number of folds
+N_CLUSTERS      = 60        # number of spatial clusters used to define folds (if using spatial CV)
+TEST_MIN_FRACT  = 0.15      # not used in current random CV, kept for reference
 RANDOM_STATE    = 42
 
 # ---- GRF defaults (auto-scaled by RAM per fold) ----
@@ -64,9 +70,6 @@ LOCAL_WEIGHT             = 0.5
 N_ESTIMATORS_RF  = 500
 MAX_FEATURES_RF  = "sqrt"
 N_JOBS_RF        = -1
-
-
-
 # ------------------------------------------------
 
 
@@ -87,6 +90,7 @@ def get_available_ram_gb():
         return psutil.virtual_memory().available / (1024**3)
     except Exception:
         return None
+
 
 def choose_grf_params(avail_gb, p_features, n_train):
     n_estimators = N_ESTIMATORS_GRF_DEFAULT
@@ -187,23 +191,18 @@ def make_spatial_folds(coords_xy: np.ndarray, n_folds=5, n_clusters=60, min_test
     We cluster points; then greedily pack clusters into each fold until target size.
     """
     n = coords_xy.shape[0]
-    # cluster in lon/lat (for Brussels scale this is fine; for meters reproject beforehand)
-    mbk = MiniBatchKMeans(n_clusters=n_clusters, random_state=random_state, batch_size=2048, n_init="auto")
+    mbk = MiniBatchKMeans(n_clusters=n_clusters, random_state=random_state,
+                          batch_size=2048, n_init="auto")
     labels = mbk.fit_predict(coords_xy)
 
-    # group indices by cluster
     clusters = [np.where(labels == c)[0] for c in np.unique(labels)]
-    # sort clusters by size (desc) for stable packing
     clusters.sort(key=lambda idx: len(idx), reverse=True)
 
-    # target test size per fold
     target = int(np.ceil(n / n_folds))
-    # greedy packing
     fold_tests = [[] for _ in range(n_folds)]
     fold_sizes = [0]*n_folds
 
     for idx in clusters:
-        # put this cluster into the fold with smallest current size
         j = int(np.argmin(fold_sizes))
         fold_tests[j].append(idx)
         fold_sizes[j] += len(idx)
@@ -217,7 +216,6 @@ def make_spatial_folds(coords_xy: np.ndarray, n_folds=5, n_clusters=60, min_test
         folds.append((train_idx, test_idx))
     return folds
 
-from sklearn.model_selection import KFold
 
 def make_random_folds(n, n_folds=10, random_state=42, shuffle=True):
     kf = KFold(n_splits=n_folds, shuffle=shuffle, random_state=random_state)
@@ -241,7 +239,8 @@ def _obs_pred(y_true, y_hat, name, fname, out_dir, target_label):
     plt.figure(figsize=(5.5,5.5))
     plt.scatter(y_true, y_hat, s=16, alpha=0.8)
     plt.plot([lo, hi], [lo, hi], "k--", linewidth=1)
-    plt.xlabel(f"Observed {target_label}"); plt.ylabel(f"Predicted {target_label} ({name})")
+    plt.xlabel(f"Observed {target_label}")
+    plt.ylabel(f"Predicted {target_label} ({name})")
     plt.title(f"Observed vs Predicted ({name}) — TEST")
     plt.tight_layout()
     plt.savefig(os.path.join(out_dir, fname), dpi=160)
@@ -279,7 +278,7 @@ def main():
     # 3) Filter rows (NaNs & invalid target)
     cols_needed = [TARGET_COL, LON_COL, LAT_COL] + FEATURE_COLS
     df = df.dropna(subset=cols_needed).reset_index(drop=True)
-    df = df[df[TARGET_COL] >= 0]  # drop negative pm values if any
+    df = df[df[TARGET_COL] >= 0]  # drop negative targets if any
     if df.empty:
         raise ValueError("No valid rows after dropping NaNs/invalid values.")
 
@@ -289,11 +288,12 @@ def main():
     coords_all = df[[LON_COL, LAT_COL]].astype(float).values
     n_all = len(df)
 
-    # 5) Make spatial folds
-    #folds = make_spatial_folds(coords_all, n_folds=N_FOLDS, n_clusters=N_CLUSTERS,min_test_fract=TEST_MIN_FRACT, random_state=RANDOM_STATE)
+    # 5) Make folds
+    # For spatial CV, use:
+    # folds = make_spatial_folds(coords_all, n_folds=N_FOLDS, n_clusters=N_CLUSTERS,
+    #                            min_test_fract=TEST_MIN_FRACT, random_state=RANDOM_STATE)
     folds = make_random_folds(len(df), n_folds=N_FOLDS, random_state=RANDOM_STATE)
 
-    # Stores
     all_preds = []
     fold_metrics = []
 
@@ -372,7 +372,7 @@ def main():
             "grf_resampled": params["resampled"]
         })
 
-        # Predictions table for this fold
+        # Predictions table for this fold (VALIDATION / TEST ONLY)
         fold_df = df.iloc[te_idx].copy()
         fold_df["fold"] = fold_id
         fold_df["split"] = "test"
@@ -407,11 +407,14 @@ def main():
 
             # Residual map (GRF)
             plt.figure(figsize=(6,5))
-            sc = plt.scatter(fold_df[LON_COL], fold_df[LAT_COL], c=fold_df["resid_grf"], s=18, cmap="RdBu", alpha=0.9)
+            sc = plt.scatter(fold_df[LON_COL], fold_df[LAT_COL], c=fold_df["resid_grf"],
+                             s=18, cmap="RdBu", alpha=0.9)
             plt.colorbar(sc, label="Residual (GRF, TEST)")
             plt.title(f"Residuals map (GRF) — TEST fold {fold_id}")
             plt.xlabel("Longitude"); plt.ylabel("Latitude")
-            plt.tight_layout(); plt.savefig(os.path.join(OUTPUT_DIR, f"residuals_map_grf_fold{fold_id}_test.png"), dpi=160); plt.close()
+            plt.tight_layout()
+            plt.savefig(os.path.join(OUTPUT_DIR, f"residuals_map_grf_fold{fold_id}_test.png"), dpi=160)
+            plt.close()
 
             # RF feature importance & PDP (TRAIN)
             if hasattr(rf, "feature_importances_"):
@@ -419,44 +422,79 @@ def main():
                 order = np.argsort(imp)[::-1]
                 plt.figure(figsize=(6,4))
                 plt.bar(range(len(order)), imp[order])
-                plt.xticks(range(len(order)), [FEATURE_COLS[i] for i in order], rotation=45, ha="right")
-                plt.ylabel("Importance"); plt.title(f"RF feature importance (TRAIN — fold {fold_id})")
-                plt.tight_layout(); plt.savefig(os.path.join(OUTPUT_DIR, f"global_feature_importance_rf_fold{fold_id}.png"), dpi=160); plt.close()
+                plt.xticks(range(len(order)), [FEATURE_COLS[i] for i in order],
+                           rotation=45, ha="right")
+                plt.ylabel("Importance")
+                plt.title(f"RF feature importance (TRAIN — fold {fold_id})")
+                plt.tight_layout()
+                plt.savefig(os.path.join(OUTPUT_DIR, f"global_feature_importance_rf_fold{fold_id}.png"), dpi=160)
+                plt.close()
 
                 topk = min(3, len(FEATURE_COLS))
                 feats = [FEATURE_COLS[i] for i in order[:topk]]
                 try:
                     fig, ax = plt.subplots(1, topk, figsize=(5*topk, 4))
-                    if topk == 1: ax = [ax]
+                    if topk == 1:
+                        ax = [ax]
                     PartialDependenceDisplay.from_estimator(rf, X_tr, feats, ax=ax)
                     fig.suptitle(f"RF partial dependence (TRAIN — fold {fold_id})")
-                    plt.tight_layout(); fig.savefig(os.path.join(OUTPUT_DIR, f"pdp_rf_top_features_fold{fold_id}.png"), dpi=160); plt.close(fig)
+                    plt.tight_layout()
+                    fig.savefig(os.path.join(OUTPUT_DIR, f"pdp_rf_top_features_fold{fold_id}.png"), dpi=160)
+                    plt.close(fig)
                 except Exception:
                     pass
 
     # Save predictions across folds
     if all_preds:
-        pd.concat(all_preds, ignore_index=True).to_csv(os.path.join(OUTPUT_DIR, "cv_predictions_residuals.csv"), index=False)
-        print(f"[OK] Saved per-fold predictions/residuals: cv_predictions_residuals.csv")
+        preds = pd.concat(all_preds, ignore_index=True)
+        preds_csv_path = os.path.join(OUTPUT_DIR, "cv_predictions_residuals.csv")
+        preds.to_csv(preds_csv_path, index=False)
+        print(f"[OK] Saved per-fold validation predictions/residuals: {preds_csv_path}")
+
+        # ---------- NEW: write validation points as a vector layer for QGIS ----------
+        # Only uses validation (test) rows, which is all we stored in all_preds
+        # Geometry from lon/lat in EPSG:4326
+        if LON_COL in preds.columns and LAT_COL in preds.columns:
+            gdf_val = gpd.GeoDataFrame(
+                preds.copy(),
+                geometry=gpd.points_from_xy(preds[LON_COL], preds[LAT_COL]),
+                crs="EPSG:4326"
+            )
+            gpkg_path = os.path.join(OUTPUT_DIR, "cv_validation_points.gpkg")
+            # Overwrite layer if it exists
+            gdf_val.to_file(gpkg_path, layer="validation_points", driver="GPKG")
+            print(f"[OK] Saved validation points vector layer: {gpkg_path} (layer='validation_points')")
+        else:
+            print("[WARN] lon/lat columns not found in preds; skipped vector export.")
+    else:
+        preds = None
+        print("[WARN] No predictions to save.")
 
     # Save fold metrics and summary
     dfm = pd.DataFrame(fold_metrics)
-    dfm.to_csv(os.path.join(OUTPUT_DIR, "cv_fold_metrics.csv"), index=False)
-    print(f"[OK] Saved fold metrics: cv_fold_metrics.csv")
+    fold_metrics_path = os.path.join(OUTPUT_DIR, "cv_fold_metrics.csv")
+    dfm.to_csv(fold_metrics_path, index=False)
+    print(f"[OK] Saved fold metrics: {fold_metrics_path}")
 
     # Aggregate
     def mean_std(col):
         return dfm[col].mean(), dfm[col].std()
-    with open(os.path.join(OUTPUT_DIR, "cv_summary.txt"), "w") as f:
-        f.write(f"Spatial K-fold CV (K={N_FOLDS}, clusters={N_CLUSTERS})\n")
+
+    summary_path = os.path.join(OUTPUT_DIR, "cv_summary.txt")
+    with open(summary_path, "w") as f:
+        f.write(f"K-fold CV (K={N_FOLDS})\n")
         f.write(f"Target: {TARGET_COL}\nFeatures: {FEATURE_COLS}\n")
         f.write(f"Samples: {n_all}\n\n")
         for model in ["rf", "grf"]:
             r2m, r2s = mean_std(f"{model}_r2_test")
             maem, maes = mean_std(f"{model}_mae_test")
             mim, mis = mean_std(f"{model}_moranI_test")
-            f.write(f"{model.upper()} TEST: R2={r2m:.4f}±{r2s:.4f}, MAE={maem:.4f}±{maes:.4f}, Moran's I={mim:.4f}±{mis:.4f}\n")
-        # GRF params range actually used
+            f.write(
+                f"{model.upper()} TEST: "
+                f"R2={r2m:.4f}±{r2s:.4f}, "
+                f"MAE={maem:.4f}±{maes:.4f}, "
+                f"Moran's I={mim:.4f}±{mis:.4f}\n"
+            )
         if "grf_band_width" in dfm.columns:
             f.write("\nGRF params across folds (min–max):\n")
             f.write(f"  band_width:   {dfm['grf_band_width'].min()}–{dfm['grf_band_width'].max()}\n")
@@ -464,7 +502,9 @@ def main():
             f.write(f"  max_features: {dfm['grf_max_features'].min()}–{dfm['grf_max_features'].max()}\n")
             f.write(f"  resampled:    {dfm['grf_resampled'].unique().tolist()}\n")
 
+    print(f"[OK] Summary written: {summary_path}")
     print("[Done] Spatial K-fold CV — RF baseline + RAM-aware GRF complete.")
+
 
 if __name__ == "__main__":
     main()

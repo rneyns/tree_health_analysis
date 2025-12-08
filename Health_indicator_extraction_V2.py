@@ -35,9 +35,9 @@ from scipy.signal import find_peaks
 
 
 # --------------------------- CONFIG ---------------------------
-OUTPUT_DIR        = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/acer pseudoplatanus'
+OUTPUT_DIR        = ('/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/acer platanoides')
 
-TREE_LAYER_PATH   = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/tree layers/Acer_psuedoplatanus.shp'
+TREE_LAYER_PATH   = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/tree layers/Acer_platanoides.shp'
 TREE_LAYER_NAME   = None
 OUTPUT_TREE_LAYER_PATH = os.path.join(OUTPUT_DIR, "trees_with_pheno.gpkg")
 
@@ -879,10 +879,10 @@ def main():
         ax1.scatter(x_doy, y, s=22, alpha=0.9, label="Observed NDVI")
         ax1.plot(t_fit * DAYS_FOR_PLOT, y_fit, linewidth=2, label="Robust fit")
 
-        ax1.axvline(sos_doy,   linestyle="--", linewidth=1.5, label=f"SOS ≈ {sos_doy:.1f}")
-        ax1.axvline(peak_doy,  linestyle="--", linewidth=1.5, label=f"Peak ≈ {peak_doy:.1f}")
-        ax1.axvline(eos_doy,   linestyle="--", linewidth=1.5, label=f"EOS ≈ {eos_doy:.1f}")
-        ax1.axvline(onset_doy, linestyle="--", linewidth=1.5, label=f"SO ≈ {onset_doy:.1f}")
+        #ax1.axvline(sos_doy,   linestyle="--", linewidth=1.5, label=f"SOS ≈ {sos_doy:.1f}")
+        #ax1.axvline(peak_doy,  linestyle="--", linewidth=1.5, label=f"Peak ≈ {peak_doy:.1f}")
+        #ax1.axvline(eos_doy,   linestyle="--", linewidth=1.5, label=f"EOS ≈ {eos_doy:.1f}")
+        #ax1.axvline(onset_doy, linestyle="--", linewidth=1.5, label=f"SO ≈ {onset_doy:.1f}")
 
         ax1.set_ylabel("NDVI")
         ax1.set_title(
@@ -908,7 +908,7 @@ def main():
         ax2.grid(True, alpha=0.3)
         ax2.legend(fontsize=7)
 
-        out_png = os.path.join(plot_dir, f"tree_{tid:04d}_ndvi_fit.png")
+        out_png = os.path.join(plot_dir, f"tree_{row['tree_id']}_ndvi_fit.png")
         fig.tight_layout()
         fig.savefig(out_png, dpi=160)
         plt.close(fig)
