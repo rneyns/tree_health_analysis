@@ -46,6 +46,7 @@ env_vars = [
     "lst_temp_r100",
     "lst_temp_r50",
     "height",
+    "insolation"
 ]
 
 # Variable to CONTROL FOR in partial correlations
