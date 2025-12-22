@@ -44,7 +44,7 @@ from scipy.stats import normaltest, shapiro, probplot
 # USER SETTINGS
 # ----------------------------
 
-RAW_DATA_CSV = "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/ndvi_metrics_with_impervious.csv"  
+RAW_DATA_CSV = "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/ndvi_metrics_with_impervious.csv"
 OUT_DIR = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations'
 
 # Controls (always used)
