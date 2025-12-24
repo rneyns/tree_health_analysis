@@ -1,27 +1,18 @@
-"""
-Script: test_health_environment_relationships.py
-
-Purpose:
-- Test whether any tree health metric is meaningfully correlated with any environmental variable.
-- Tests include Pearson, Spearman, Kendall, Partial Correlation, and Distance Correlation.
-- Outputs a table summarizing effect sizes + significance with FDR correction.
-"""
-
 import pandas as pd
 import numpy as np
-from scipy.stats import pearsonr, spearmanr, kendalltau
-from sklearn.preprocessing import StandardScaler
-from statsmodels.stats.multitest import multipletests
-import pingouin as pg  # pip install pingouin (for partial correlations)
-from dcor import distance_correlation  # pip install dcor
+import matplotlib.pyplot as plt
+from pathlib import Path
+from itertools import combinations, product
+from statsmodels.nonparametric.smoothers_lowess import lowess
+import pingouin as pg
+from statsmodels.stats.multitest import multipletests  # for optional FDR correction
 
 # ----------------------------
-# USER INPUT
+# USER SETTINGS
 # ----------------------------
 
-df = pd.read_csv('/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/ndvi_metrics_with_impervious.csv')
+DATA_PATH = "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/ndvi_metrics_with_impervious.csv"
 
-# Define your health metrics
 health_vars = [
     "ndvi_peak",
     "ndvi_base",
@@ -35,370 +26,458 @@ health_vars = [
     "amplitude",
     "slope_sos_peak",
     "senescence_rate",
-    "auc_above_base_full"
+    "auc_above_base_full",
 ]
 
-# Define your environmental predictors
 env_vars = [
     "imperv_10m",
     "imperv_20m",
+    "imperv_50m",
+    "imperv_100m",
     "poll_no2_anmean",
-    "lst_temp_r100",
-    "lst_temp_r50",
+    "poll_bc_anmean",
+    "poll_pm25_anmean",
+    "lst_temp_r100_y",
+    "lst_temp_r50_y",
     "height",
-    "insolation"
+    "insolation9",
 ]
 
-# Variable to CONTROL FOR in partial correlations
-control_var = "imperv_10m"
+CONTROL_VAR = "height"
 
-# ----------------------------
-# RESULTS TABLE
-# ----------------------------
+# Cleaning
+DROP_POLLUTION_NEGATIVE = True  # remove any rows where any poll_* < 0
 
-results = []
+# Outputs
+OUTDIR = Path("/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/corr_outputs")
+OUTDIR.mkdir(exist_ok=True)
+SCATTER_DIR_ALL = OUTDIR / "scatterplots_all_pairs"
+SCATTER_DIR_ALL.mkdir(exist_ok=True)
+SCATTER_DIR_TOP = OUTDIR / "scatterplots_top_pairs_height_controlled"
+SCATTER_DIR_TOP.mkdir(exist_ok=True)
 
-for h in health_vars:
-    for e in env_vars:
+# Heatmap settings
+FIG_DPI = 300
+HEATMAP_VLIM = 1.0  # color scale range [-1, 1]
 
-        if h == e:
-            continue
+# Significance settings
+ANNOTATE_SIGNIFICANCE = True          # add *, **, *** in heatmap cells
+MASK_NON_SIGNIFICANT = False          # set to True to blank out non-sig values in heatmap
+ALPHA_SIG = 0.05                      # significance threshold for masking / stars
+APPLY_FDR_BH = False                  # set True to apply FDR (Benjamini-Hochberg) per matrix before stars/masking
 
-        # Drop NA for the three vars we need
-        df_sub = df[[h, e, control_var]].dropna()
+# Scatter settings
+PLOT_ENV_ENV_ALL = True
+PLOT_HEALTH_HEALTH_ALL = True
+PLOT_HEALTH_ENV_ALL = False  # can be huge
 
-        # Convert to numpy arrays
-        x = np.asarray(df_sub[h])
-        y = np.asarray(df_sub[e])
+ALPHA = 0.20
+POINT_SIZE = 8
+SMOOTH = True
+SMOOTH_FRAC = 0.30
 
-        # --- Guardrails: make sure both are 1D numeric vectors ---
-        # Skip if y (or x) is multi-dimensional, e.g. shape (n, 2)
-        if x.ndim != 1 or y.ndim != 1:
-            print(f"Skipping pair {h} – {e}: x.shape={x.shape}, y.shape={y.shape} (need 1D)")
-            continue
+MAX_POINTS_TO_PLOT = 20000  # downsample only for plotting speed
+RANDOM_SEED = 42
 
-        # Skip if lengths don't match for some reason
-        if x.shape[0] != y.shape[0]:
-            print(f"Skipping pair {h} – {e}: length mismatch {x.shape[0]} vs {y.shape[0]}")
-            continue
-
-        # Try casting to float; skip if it fails (non-numeric)
-        try:
-            x = x.astype(float)
-            y = y.astype(float)
-        except ValueError:
-            print(f"Skipping pair {h} – {e}: could not convert to float")
-            continue
-
-        # -----------------------------
-        # Compute correlations
-        # -----------------------------
-        pear_r, pear_p = pearsonr(x, y)
-        spear_rho, spear_p = spearmanr(x, y)
-        kend_tau, kend_p = kendalltau(x, y)
-
-        # Partial Spearman: health ~ env | control_var
-        pcorr = pg.partial_corr(
-            data=df_sub,
-            x=h,
-            y=e,
-            covar=control_var,
-            method="spearman"
-        )
-        part_rho = pcorr["r"].values[0]
-        part_p = pcorr["p-val"].values[0]
-
-        # Distance correlation
-        dcor_val = distance_correlation(x, y)
-
-        results.append({
-            "health_metric": h,
-            "env_metric": e,
-            "pearson_r": pear_r, "pearson_p": pear_p,
-            "spearman_rho": spear_rho, "spearman_p": spear_p,
-            "kendall_tau": kend_tau, "kendall_p": kend_p,
-            "partial_spearman_rho": part_rho, "partial_p": part_p,
-            "distance_corr": dcor_val
-        })
+# Top-N pairs (selected from height-controlled matrices)
+MAKE_TOP_PAIR_PLOTS = True
+TOP_N_PAIRS = 10
 
 
 # ----------------------------
-# CREATE RESULTS DATAFRAME
+# LOAD + CLEAN
 # ----------------------------
 
-res = pd.DataFrame(results)
+df = pd.read_csv(DATA_PATH)
 
-# FDR correction across all tests
-for col in ["pearson_p", "spearman_p", "kendall_p", "partial_p"]:
-    res[col+"_adj"] = multipletests(res[col], method='fdr_bh')[1]
+if DROP_POLLUTION_NEGATIVE:
+    pollution_cols = [c for c in df.columns if c.startswith("poll_")]
+    if pollution_cols:
+        bad = df[pollution_cols].lt(0).any(axis=1)  # ignores NaNs
+        removed = int(bad.sum())
+        df = df.loc[~bad].copy()
+        print(f"Removed {removed} rows where any poll_* < 0 across: {pollution_cols}")
+    else:
+        print("No poll_* columns found; skipping pollution<0 filter.")
 
-res.to_csv('/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/health_environment_stats_summary.csv', index=False)
+# Ensure numeric for all variables of interest
+all_vars = sorted(set(health_vars + env_vars + [CONTROL_VAR]))
+missing = [c for c in all_vars if c not in df.columns]
+if missing:
+    raise ValueError(f"Missing columns in df: {missing}")
 
-print("✔ Done! Results saved.")
+for c in all_vars:
+    df[c] = pd.to_numeric(df[c], errors="coerce")
 
-#-------------------------------------------
-# Plotting the most interesting correlations
-#--------------------------------------------
-
-df_raw = df
-
-import seaborn as sns
-import matplotlib.pyplot as plt
-
-sns.regplot(
-    data=df_raw,
-    x="imperv_20m",
-    y="ndvi_peak",
-    lowess=True,
-    scatter_kws={"alpha": 0.3}
-)
-
-plt.title("NDVI peak vs impervious surface (20 m)")
-plt.xlabel("Impervious surface fraction (20 m)")
-plt.ylabel("NDVI peak")
-plt.show()
-
-sns.regplot(
-    data=df_raw,
-    x="imperv_10m",
-    y="ndvi_peak",
-    lowess=True,
-    scatter_kws={"alpha": 0.3},
-    label="10 m"
-)
-
-sns.regplot(
-    data=df_raw,
-    x="imperv_20m",
-    y="ndvi_peak",
-    lowess=True,
-    scatter_kws={"alpha": 0.3},
-    label="20 m",
-    color="red"
-)
-
-plt.legend()
-plt.title("NDVI peak vs imperviousness at two spatial scales")
-plt.show()
-
-sns.regplot(
-    data=df_raw,
-    x="height",
-    y="ndvi_peak",
-    lowess=True,
-    scatter_kws={"alpha": 0.3}
-)
-
-plt.title("NDVI peak vs tree height")
-plt.xlabel("Tree height (m)")
-plt.ylabel("NDVI peak")
-plt.show()
-
-
-from pingouin import partial_corr
-
-# residual plot logic
-import statsmodels.api as sm
-
-X = sm.add_constant(df_raw["imperv_20m"])
-res_ndvi = sm.OLS(df_raw["ndvi_peak"], X).fit().resid
-res_height = sm.OLS(df_raw["height"], X).fit().resid
-
-plt.scatter(res_height, res_ndvi, alpha=0.3)
-plt.xlabel("Height (residuals | imperv_20m)")
-plt.ylabel("NDVI peak (residuals | imperv_20m)")
-plt.title("Partial relationship: NDVI peak ~ height | imperviousness")
-plt.show()
-
-sns.scatterplot(
-    data=df_raw,
-    x="poll_no2_anmean",
-    y="ndvi_peak",
-    alpha=0.3
-)
-
-sns.regplot(
-    data=df_raw,
-    x="poll_no2_anmean",
-    y="ndvi_peak",
-    lowess=True,
-    scatter=False,
-    color="red"
-)
-
-plt.title("NDVI peak vs NO₂ (possible nonlinear response)")
-plt.show()
-
-
-# -------------------------------------------
-# Composite figure: Pollution vs Heat (GAM + residual plots)
-# -------------------------------------------
-
-import numpy as np
-import matplotlib.pyplot as plt
-import statsmodels.api as sm
-
-# If you don't already have these installed:
-# pip install pygam
-from pygam import LinearGAM, s
-
-# ---- Settings (edit if needed) ----
-HEALTH = "auc_above_base_full"
-PRED_NO2 = "poll_no2_anmean"
-PRED_LST = "lst_temp_r100"      # choose r50 or r100
-CONTROLS = ["imperv_10m", "height"]
-
-# NO2 cleaning (applied only to NO2)
-NO2_MIN_VALID = 0.0   # set to >0 if 0 is invalid in your dataset
-TRIM_NO2_TAILS = True
-NO2_LOW_Q = 0.01
-NO2_HIGH_Q = 0.99
-
-# GAM smoothness
-N_SPLINES = 10
-LAM_GRID = np.logspace(-3, 3, 15)
-
-ALPHA = 0.25
-
-def _make_numeric(df, cols):
-    out = df.copy()
+# ----------------------------
+# STANDARDISE ALL VARIABLES (Z-SCORE)
+# ----------------------------
+def zscore_df(df_in: pd.DataFrame, cols: list[str], eps: float = 1e-12) -> pd.DataFrame:
+    """
+    Z-score standardisation for selected columns.
+    Uses population SD (ddof=0). Columns with ~zero variance become 0.
+    """
+    df_out = df_in.copy()
     for c in cols:
-        out[c] = pd.to_numeric(out[c], errors="coerce")
+        x = df_out[c]
+        mu = x.mean(skipna=True)
+        sd = x.std(skipna=True, ddof=0)
+        if sd is None or np.isnan(sd) or sd < eps:
+            df_out[c] = 0.0
+        else:
+            df_out[c] = (x - mu) / sd
+    return df_out
+
+df = zscore_df(df, all_vars)
+
+
+# ----------------------------
+# SIGNIFICANCE HELPERS
+# ----------------------------
+
+def p_to_stars(p: float) -> str:
+    if not np.isfinite(p):
+        return ""
+    if p < 0.001:
+        return "***"
+    if p < 0.01:
+        return "**"
+    if p < 0.05:
+        return "*"
+    return ""
+
+def fdr_bh_matrix(pmat: pd.DataFrame) -> pd.DataFrame:
+    """
+    Apply Benjamini-Hochberg FDR correction to a p-value matrix (cell-wise),
+    ignoring NaNs. Returns a matrix of adjusted p-values with same shape/index/cols.
+    """
+    p = pmat.values.astype(float).ravel()
+    mask = np.isfinite(p)
+    if mask.sum() == 0:
+        return pmat.copy()
+
+    _, p_adj, _, _ = multipletests(p[mask], method="fdr_bh")
+    out = pmat.copy()
+    out.values.ravel()[mask] = p_adj
     return out
 
-def _residualize(y: np.ndarray, X: np.ndarray) -> np.ndarray:
-    """Return residuals from OLS y ~ X (with intercept)."""
-    Xc = sm.add_constant(X, has_constant="add")
-    return sm.OLS(y, Xc, missing="drop").fit().resid
 
-def _prep_subset(df, y_col, x_col, controls, apply_no2_filter=False):
-    cols = [y_col, x_col] + controls
-    d = df[cols].dropna().copy()
-    d = _make_numeric(d, cols).dropna()
+# ----------------------------
+# CORRELATION HELPERS
+# ----------------------------
 
-    if apply_no2_filter:
-        d = d[d[x_col] > NO2_MIN_VALID].copy()
-        if TRIM_NO2_TAILS and len(d) > 0:
-            lo = d[x_col].quantile(NO2_LOW_Q)
-            hi = d[x_col].quantile(NO2_HIGH_Q)
-            d = d[(d[x_col] >= lo) & (d[x_col] <= hi)].copy()
+def spearman_scalar(x: pd.Series, y: pd.Series) -> float:
+    d = pd.concat([x, y], axis=1).dropna()
+    if len(d) < 3:
+        return np.nan
+    return float(d.iloc[:, 0].corr(d.iloc[:, 1], method="spearman"))
 
-    return d
-
-def _fit_gam_and_grid(d, y_col, x_col, controls):
+def spearman_with_p(x: pd.Series, y: pd.Series):
     """
-    Fit GAM: y ~ s(x) + s(control1) + s(control2)
-    Returns: gam, xgrid, pdep, (lower, upper)
+    Returns (rho, pval, n) for Spearman correlation using the same row set.
     """
-    cols = [x_col] + controls
-    X = d[cols].values.astype(float)
-    y = d[y_col].values.astype(float)
+    d = pd.concat([x, y], axis=1).dropna()
+    n = len(d)
+    if n < 3:
+        return np.nan, np.nan, n
+    out = pg.corr(d.iloc[:, 0], d.iloc[:, 1], method="spearman")
+    r = float(out["r"].iloc[0])
+    p = float(out["p-val"].iloc[0])
+    return r, p, n
 
-    gam = LinearGAM(
-        s(0, n_splines=N_SPLINES) + s(1, n_splines=N_SPLINES) + s(2, n_splines=N_SPLINES)
-    ).gridsearch(X, y, lam=LAM_GRID, progress=False)
+def compute_spearman_matrix_with_p(df_in: pd.DataFrame, vars_a: list[str], vars_b: list[str]):
+    """
+    Returns (rho_matrix, pval_matrix, n_matrix)
+    """
+    rho = pd.DataFrame(index=vars_a, columns=vars_b, dtype=float)
+    pval = pd.DataFrame(index=vars_a, columns=vars_b, dtype=float)
+    nmat = pd.DataFrame(index=vars_a, columns=vars_b, dtype=float)
 
-    # grid for term 0 (focal predictor)
-    XX = gam.generate_X_grid(term=0)
-    xgrid = XX[:, 0]
+    for a in vars_a:
+        for b in vars_b:
+            r, p, n = spearman_with_p(df_in[a], df_in[b])
+            rho.loc[a, b] = r
+            pval.loc[a, b] = p
+            nmat.loc[a, b] = n
 
-    pdep = gam.partial_dependence(term=0, X=XX)
-    pdep = np.asarray(pdep)
-    if pdep.ndim == 2:
-        pdep = pdep[:, 0]
-    pdep = pdep.ravel()
+    return rho, pval, nmat
 
-    # confidence bands (pyGAM versions differ)
-    ci = gam.partial_dependence(term=0, X=XX, width=0.95)
-    lower = upper = None
+def compute_partial_spearman_matrix_with_p(df_in: pd.DataFrame, vars_a: list[str], vars_b: list[str], covar: str):
+    """
+    Returns (rho_matrix, pval_matrix, n_matrix) for partial Spearman (control covar).
+    """
+    rho = pd.DataFrame(index=vars_a, columns=vars_b, dtype=float)
+    pval = pd.DataFrame(index=vars_a, columns=vars_b, dtype=float)
+    nmat = pd.DataFrame(index=vars_a, columns=vars_b, dtype=float)
 
-    if isinstance(ci, (list, tuple)) and len(ci) == 2:
-        lower = np.asarray(ci[0]).ravel()
-        upper = np.asarray(ci[1]).ravel()
+    for a in vars_a:
+        for b in vars_b:
+            if a == covar or b == covar:
+                rho.loc[a, b] = np.nan
+                pval.loc[a, b] = np.nan
+                nmat.loc[a, b] = np.nan
+                continue
+
+            d = df_in[[a, b, covar]].dropna()
+            n = len(d)
+            if n < 5:
+                rho.loc[a, b] = np.nan
+                pval.loc[a, b] = np.nan
+                nmat.loc[a, b] = n
+                continue
+
+            try:
+                pc = pg.partial_corr(data=d, x=a, y=b, covar=covar, method="spearman")
+                rho.loc[a, b] = float(pc["r"].iloc[0])
+                pval.loc[a, b] = float(pc["p-val"].iloc[0])
+                nmat.loc[a, b] = n
+            except Exception as e:
+                print(f"Partial corr failed for {a} vs {b} | {covar}: {e}")
+                rho.loc[a, b] = np.nan
+                pval.loc[a, b] = np.nan
+                nmat.loc[a, b] = n
+
+    return rho, pval, nmat
+
+
+def plot_corr_heatmap(mat: pd.DataFrame, pmat: pd.DataFrame | None, title: str, outfile: Path, vlim: float = 1.0):
+    """
+    Heatmap with optional significance stars based on pmat.
+    If MASK_NON_SIGNIFICANT is True, cells with p >= ALPHA_SIG are masked (set to NaN).
+    If APPLY_FDR_BH is True, p-values are adjusted per-matrix before stars/masking.
+    """
+    mat_plot = mat.copy()
+    p_use = None
+
+    if pmat is not None:
+        p_use = pmat.copy()
+        if APPLY_FDR_BH:
+            p_use = fdr_bh_matrix(p_use)
+
+        if MASK_NON_SIGNIFICANT:
+            mat_plot = mat_plot.where(p_use < ALPHA_SIG)
+
+    arr = mat_plot.values.astype(float)
+
+    fig, ax = plt.subplots(
+        figsize=(1 + 0.55 * mat_plot.shape[1], 1 + 0.45 * mat_plot.shape[0]),
+        constrained_layout=True
+    )
+    im = ax.imshow(arr, vmin=-vlim, vmax=vlim, aspect="auto")
+    ax.set_title(title)
+
+    ax.set_xticks(range(mat_plot.shape[1]))
+    ax.set_xticklabels(mat_plot.columns, rotation=45, ha="right")
+    ax.set_yticks(range(mat_plot.shape[0]))
+    ax.set_yticklabels(mat_plot.index)
+
+    # cell labels
+    for i in range(mat_plot.shape[0]):
+        for j in range(mat_plot.shape[1]):
+            r = arr[i, j]
+            if not np.isfinite(r):
+                continue
+
+            stars = ""
+            if ANNOTATE_SIGNIFICANCE and (p_use is not None):
+                p = float(p_use.values[i, j])
+                stars = p_to_stars(p)
+
+            ax.text(j, i, f"{r:.2f}{stars}", ha="center", va="center", fontsize=7)
+
+    cbar = fig.colorbar(im, ax=ax, shrink=0.9)
+    cbar.set_label("Spearman ρ (signed)")
+    plt.savefig(outfile, dpi=FIG_DPI)
+    plt.close()
+
+
+def upper_triangle_pairs(mat_square: pd.DataFrame) -> pd.DataFrame:
+    if mat_square.shape[0] != mat_square.shape[1]:
+        raise ValueError("upper_triangle_pairs requires a square matrix.")
+    vars_ = list(mat_square.index)
+    rows = []
+    for i in range(len(vars_)):
+        for j in range(i + 1, len(vars_)):
+            v1, v2 = vars_[i], vars_[j]
+            rho = mat_square.loc[v1, v2]
+            if np.isfinite(rho):
+                rows.append((v1, v2, float(rho), abs(float(rho))))
+    out = pd.DataFrame(rows, columns=["var1", "var2", "rho", "abs_rho"])
+    return out.sort_values("abs_rho", ascending=False)
+
+
+# ----------------------------
+# SCATTERPLOT HELPERS
+# ----------------------------
+
+def safe_name(s: str) -> str:
+    return (
+        s.replace(" ", "_")
+         .replace("/", "-")
+         .replace("×", "x")
+         .replace("(", "")
+         .replace(")", "")
+    )
+
+def scatter_pair(df_in: pd.DataFrame, xcol: str, ycol: str, outpath: Path, title: str | None = None):
+    d = df_in[[xcol, ycol]].dropna()
+    n = len(d)
+    if n < 3:
+        return
+
+    rho = spearman_scalar(d[xcol], d[ycol])
+
+    # Downsample only for plotting speed (rho computed on full d)
+    if n > MAX_POINTS_TO_PLOT:
+        d_plot = d.sample(MAX_POINTS_TO_PLOT, random_state=RANDOM_SEED)
     else:
-        ci_arr = np.asarray(ci)
-        if ci_arr.ndim == 2 and ci_arr.shape[1] == 2:
-            lower = ci_arr[:, 0].ravel()
-            upper = ci_arr[:, 1].ravel()
+        d_plot = d
 
-    # Defensive alignment (in case a version returns odd shapes)
-    if len(xgrid) != len(pdep):
-        xgrid = np.linspace(np.nanmin(xgrid), np.nanmax(xgrid), len(pdep))
+    fig, ax = plt.subplots(figsize=(5, 4), constrained_layout=True)
+    ax.scatter(d_plot[xcol], d_plot[ycol], s=POINT_SIZE, alpha=ALPHA)
 
-    return gam, xgrid, pdep, lower, upper
+    if SMOOTH and len(d_plot) > 20:
+        sm = lowess(d_plot[ycol], d_plot[xcol], frac=SMOOTH_FRAC, return_sorted=True)
+        ax.plot(sm[:, 0], sm[:, 1])
 
-def _added_variable_data(d, y_col, x_col, controls):
-    """
-    Compute residual(y|controls) and residual(x|controls)
-    """
-    yc = d[y_col].values.astype(float)
-    xc = d[x_col].values.astype(float)
-    Z = d[controls].values.astype(float)
+    ax.set_xlabel(xcol)
+    ax.set_ylabel(ycol)
+    ax.set_title(title if title else f"{ycol} vs {xcol}")
 
-    ry = _residualize(yc, Z)
-    rx = _residualize(xc, Z)
-    return rx, ry
+    ax.text(
+        0.02, 0.98,
+        f"Spearman ρ = {rho:.2f}\n n = {n}",
+        transform=ax.transAxes,
+        ha="left", va="top", fontsize=9,
+        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.85),
+    )
 
-# ---- Prepare data ----
-d_no2 = _prep_subset(df, HEALTH, PRED_NO2, CONTROLS, apply_no2_filter=True)
-d_lst = _prep_subset(df, HEALTH, PRED_LST, CONTROLS, apply_no2_filter=False)
+    plt.savefig(outpath, dpi=FIG_DPI)
+    plt.close()
 
-# ---- Fit GAMs ----
-gam_no2, x_no2, p_no2, lo_no2, hi_no2 = _fit_gam_and_grid(d_no2, HEALTH, PRED_NO2, CONTROLS)
-gam_lst, x_lst, p_lst, lo_lst, hi_lst = _fit_gam_and_grid(d_lst, HEALTH, PRED_LST, CONTROLS)
+def run_all_pairs(pairs, subdir: Path):
+    subdir.mkdir(exist_ok=True)
+    total = 0
+    for x, y in pairs:
+        if x not in df.columns or y not in df.columns:
+            continue
+        out = subdir / f"{safe_name(y)}__vs__{safe_name(x)}.png"
+        scatter_pair(df, x, y, out)
+        total += 1
+        if total % 50 == 0:
+            print(f"{subdir.name}: generated {total} plots...")
+    print(f"{subdir.name}: done ({total} plots)")
 
-# ---- Added-variable residual data ----
-rx_no2, ry_no2 = _added_variable_data(d_no2, HEALTH, PRED_NO2, CONTROLS)
-rx_lst, ry_lst = _added_variable_data(d_lst, HEALTH, PRED_LST, CONTROLS)
 
-# ---- Build composite figure ----
-fig, axes = plt.subplots(2, 2, figsize=(11, 8))
+# ----------------------------
+# 1) CORRELATION MATRICES (CSV + heatmaps + p-values)
+# ----------------------------
 
-# (A) NO2 GAM partial dependence
-ax = axes[0, 0]
-ax.plot(x_no2, p_no2)
-if lo_no2 is not None and hi_no2 is not None and len(lo_no2) == len(x_no2) and len(hi_no2) == len(x_no2):
-    ax.plot(x_no2, lo_no2, linestyle="--")
-    ax.plot(x_no2, hi_no2, linestyle="--")
-ax.set_title(f"(A) GAM partial effect: {PRED_NO2} → {HEALTH}\ncontrols: {', '.join(CONTROLS)}")
-ax.set_xlabel(PRED_NO2)
-ax.set_ylabel("Partial effect on health")
+print("Computing correlation matrices...")
 
-# (B) NO2 added-variable plot
-ax = axes[0, 1]
-ax.scatter(rx_no2, ry_no2, alpha=ALPHA)
-m = sm.OLS(ry_no2, sm.add_constant(rx_no2, has_constant="add")).fit()
-xs = np.linspace(np.nanmin(rx_no2), np.nanmax(rx_no2), 200)
-ax.plot(xs, m.params[0] + m.params[1] * xs)
-ax.set_title(f"(B) Added-variable: {PRED_NO2} residual vs {HEALTH} residual\n"
-             f"slope={m.params[1]:.3g}, p={m.pvalues[1]:.3g}")
-ax.set_xlabel(f"{PRED_NO2} residuals | controls")
-ax.set_ylabel(f"{HEALTH} residuals | controls")
+# Health vs Environment (RAW)
+raw_hxe, raw_hxe_p, raw_hxe_n = compute_spearman_matrix_with_p(df, health_vars, env_vars)
+raw_hxe.to_csv(OUTDIR / "corr_spearman_signed_health_vs_env.csv")
+raw_hxe_p.to_csv(OUTDIR / "pvals_spearman_health_vs_env.csv")
+raw_hxe_n.to_csv(OUTDIR / "n_spearman_health_vs_env.csv")
+plot_corr_heatmap(raw_hxe, raw_hxe_p, "Signed Spearman (health vs env) — raw", OUTDIR / "heatmap_raw_health_vs_env.png", vlim=HEATMAP_VLIM)
 
-# (C) LST GAM partial dependence
-ax = axes[1, 0]
-ax.plot(x_lst, p_lst)
-if lo_lst is not None and hi_lst is not None and len(lo_lst) == len(x_lst) and len(hi_lst) == len(x_lst):
-    ax.plot(x_lst, lo_lst, linestyle="--")
-    ax.plot(x_lst, hi_lst, linestyle="--")
-ax.set_title(f"(C) GAM partial effect: {PRED_LST} → {HEALTH}\ncontrols: {', '.join(CONTROLS)}")
-ax.set_xlabel(PRED_LST)
-ax.set_ylabel("Partial effect on health")
+# Health vs Environment (PARTIAL)
+par_hxe, par_hxe_p, par_hxe_n = compute_partial_spearman_matrix_with_p(df, health_vars, env_vars, CONTROL_VAR)
+par_hxe.to_csv(OUTDIR / f"corr_partial_spearman_signed_health_vs_env_control_{CONTROL_VAR}.csv")
+par_hxe_p.to_csv(OUTDIR / f"pvals_partial_spearman_health_vs_env_control_{CONTROL_VAR}.csv")
+par_hxe_n.to_csv(OUTDIR / f"n_partial_spearman_health_vs_env_control_{CONTROL_VAR}.csv")
+plot_corr_heatmap(par_hxe, par_hxe_p, f"Signed partial Spearman (health vs env) — control {CONTROL_VAR}", OUTDIR / f"heatmap_partial_health_vs_env_control_{CONTROL_VAR}.png", vlim=HEATMAP_VLIM)
 
-# (D) LST added-variable plot
-ax = axes[1, 1]
-ax.scatter(rx_lst, ry_lst, alpha=ALPHA)
-m2 = sm.OLS(ry_lst, sm.add_constant(rx_lst, has_constant="add")).fit()
-xs2 = np.linspace(np.nanmin(rx_lst), np.nanmax(rx_lst), 200)
-ax.plot(xs2, m2.params[0] + m2.params[1] * xs2)
-ax.set_title(f"(D) Added-variable: {PRED_LST} residual vs {HEALTH} residual\n"
-             f"slope={m2.params[1]:.3g}, p={m2.pvalues[1]:.3g}")
-ax.set_xlabel(f"{PRED_LST} residuals | controls")
-ax.set_ylabel(f"{HEALTH} residuals | controls")
+# Env vs Env (RAW)
+raw_env, raw_env_p, raw_env_n = compute_spearman_matrix_with_p(df, env_vars, env_vars)
+np.fill_diagonal(raw_env.values, np.nan)
+np.fill_diagonal(raw_env_p.values, np.nan)
+np.fill_diagonal(raw_env_n.values, np.nan)
+raw_env.to_csv(OUTDIR / "corr_spearman_signed_env_vs_env.csv")
+raw_env_p.to_csv(OUTDIR / "pvals_spearman_env_vs_env.csv")
+raw_env_n.to_csv(OUTDIR / "n_spearman_env_vs_env.csv")
+plot_corr_heatmap(raw_env, raw_env_p, "Signed Spearman (env vs env) — raw", OUTDIR / "heatmap_raw_env_vs_env.png", vlim=HEATMAP_VLIM)
 
-plt.tight_layout()
+# Env vs Env (PARTIAL)
+par_env, par_env_p, par_env_n = compute_partial_spearman_matrix_with_p(df, env_vars, env_vars, CONTROL_VAR)
+np.fill_diagonal(par_env.values, np.nan)
+np.fill_diagonal(par_env_p.values, np.nan)
+np.fill_diagonal(par_env_n.values, np.nan)
+par_env.to_csv(OUTDIR / f"corr_partial_spearman_signed_env_vs_env_control_{CONTROL_VAR}.csv")
+par_env_p.to_csv(OUTDIR / f"pvals_partial_spearman_env_vs_env_control_{CONTROL_VAR}.csv")
+par_env_n.to_csv(OUTDIR / f"n_partial_spearman_env_vs_env_control_{CONTROL_VAR}.csv")
+plot_corr_heatmap(par_env, par_env_p, f"Signed partial Spearman (env vs env) — control {CONTROL_VAR}", OUTDIR / f"heatmap_partial_env_vs_env_control_{CONTROL_VAR}.png", vlim=HEATMAP_VLIM)
 
-# Save (recommended for paper), or just show
-# fig.savefig("composite_NO2_vs_LST_auc_controls.png", dpi=300, bbox_inches="tight")
-plt.show()
+# Health vs Health (RAW)
+raw_health, raw_health_p, raw_health_n = compute_spearman_matrix_with_p(df, health_vars, health_vars)
+np.fill_diagonal(raw_health.values, np.nan)
+np.fill_diagonal(raw_health_p.values, np.nan)
+np.fill_diagonal(raw_health_n.values, np.nan)
+raw_health.to_csv(OUTDIR / "corr_spearman_signed_health_vs_health.csv")
+raw_health_p.to_csv(OUTDIR / "pvals_spearman_health_vs_health.csv")
+raw_health_n.to_csv(OUTDIR / "n_spearman_health_vs_health.csv")
+plot_corr_heatmap(raw_health, raw_health_p, "Signed Spearman (health vs health) — raw", OUTDIR / "heatmap_raw_health_vs_health.png", vlim=HEATMAP_VLIM)
 
+# Health vs Health (PARTIAL)
+par_health, par_health_p, par_health_n = compute_partial_spearman_matrix_with_p(df, health_vars, health_vars, CONTROL_VAR)
+np.fill_diagonal(par_health.values, np.nan)
+np.fill_diagonal(par_health_p.values, np.nan)
+np.fill_diagonal(par_health_n.values, np.nan)
+par_health.to_csv(OUTDIR / f"corr_partial_spearman_signed_health_vs_health_control_{CONTROL_VAR}.csv")
+par_health_p.to_csv(OUTDIR / f"pvals_partial_spearman_health_vs_health_control_{CONTROL_VAR}.csv")
+par_health_n.to_csv(OUTDIR / f"n_partial_spearman_health_vs_health_control_{CONTROL_VAR}.csv")
+plot_corr_heatmap(par_health, par_health_p, f"Signed partial Spearman (health vs health) — control {CONTROL_VAR}", OUTDIR / f"heatmap_partial_health_vs_health_control_{CONTROL_VAR}.png", vlim=HEATMAP_VLIM)
+
+print("Correlation matrices saved to:", OUTDIR.resolve())
+
+
+# ----------------------------
+# 2) SCATTERPLOTS FOR ALL PAIRS (robust)
+# ----------------------------
+
+print("Generating scatterplots for all pairs...")
+
+if PLOT_ENV_ENV_ALL:
+    env_pairs = list(combinations(env_vars, 2))
+    run_all_pairs(env_pairs, SCATTER_DIR_ALL / "env_vs_env")
+
+if PLOT_HEALTH_HEALTH_ALL:
+    health_pairs = list(combinations(health_vars, 2))
+    run_all_pairs(health_pairs, SCATTER_DIR_ALL / "health_vs_health")
+
+if PLOT_HEALTH_ENV_ALL:
+    cross_pairs = list(product(env_vars, health_vars))  # x=env, y=health
+    run_all_pairs(cross_pairs, SCATTER_DIR_ALL / "health_vs_env")
+
+
+# ----------------------------
+# 3) SCATTERPLOTS FOR TOP-N PAIRS (selected from HEIGHT-CONTROLLED matrices)
+# ----------------------------
+
+if MAKE_TOP_PAIR_PLOTS:
+    print(f"Generating top {TOP_N_PAIRS} pair scatterplots selected from height-controlled matrices...")
+
+    # Env top pairs from partial matrix
+    env_top = upper_triangle_pairs(par_env).head(TOP_N_PAIRS)
+    env_top.to_csv(SCATTER_DIR_TOP / f"top{TOP_N_PAIRS}_env_pairs_partial_control_{CONTROL_VAR}.csv", index=False)
+
+    env_dir = SCATTER_DIR_TOP / "env_vs_env_top"
+    env_dir.mkdir(exist_ok=True)
+    for k, row in env_top.reset_index(drop=True).iterrows():
+        v1, v2 = row["var1"], row["var2"]
+        out = env_dir / f"env_pair_{k+1:02d}_{safe_name(v1)}__{safe_name(v2)}.png"
+        scatter_pair(df, v1, v2, out, title=f"ENV (partial control {CONTROL_VAR}) #{k+1}: {v2} vs {v1}")
+
+    # Health top pairs from partial matrix
+    health_top = upper_triangle_pairs(par_health).head(TOP_N_PAIRS)
+    health_top.to_csv(SCATTER_DIR_TOP / f"top{TOP_N_PAIRS}_health_pairs_partial_control_{CONTROL_VAR}.csv", index=False)
+
+    health_dir = SCATTER_DIR_TOP / "health_vs_health_top"
+    health_dir.mkdir(exist_ok=True)
+    for k, row in health_top.reset_index(drop=True).iterrows():
+        v1, v2 = row["var1"], row["var2"]
+        out = health_dir / f"health_pair_{k+1:02d}_{safe_name(v1)}__{safe_name(v2)}.png"
+        scatter_pair(df, v1, v2, out, title=f"HEALTH (partial control {CONTROL_VAR}) #{k+1}: {v2} vs {v1}")
+
+print("Done.")

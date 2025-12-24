@@ -51,8 +51,8 @@ OUT_DIR = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data
 CONTROL_VARS = ["imperv_10m", "height"]
 
 # Focal predictors: UHI + pollution
-UHI_VARS = ["lst_temp_r50", "lst_temp_r100"]
-POLLUTION_VARS = ["poll_no2_anmean"]
+UHI_VARS = ["lst_temp_r50_y", "lst_temp_r100_y"]
+POLLUTION_VARS = ["poll_no2_anmean", "poll_bc_anmean", "poll_pm10_anmean", "poll_pm25_anmean"]
 
 FOCAL_PREDICTORS = UHI_VARS + POLLUTION_VARS
 
@@ -94,6 +94,17 @@ BIOLOGICAL_FILTERS = {
     "poll_no2_anmean": lambda x: x > 0,
 }
 
+# Standardize (z-score) variables before partial corr / residual plots / GAM
+STANDARDIZE = True
+
+# Options:
+# - "predictors_only": standardize pred + controls (health stays raw)
+# - "all_model_vars": standardize health + pred + controls (makes added-variable slope ~ standardized beta)
+STANDARDIZE_WHAT = "all_model_vars"
+
+# Standardization style (keep simple)
+STANDARDIZE_METHOD = "zscore"  # only zscore implemented below
+STANDARDIZE_EPS = 1e-12
 
 
 # ----------------------------
@@ -131,31 +142,34 @@ def apply_biological_filters(df: pd.DataFrame, vars_involved: list[str]) -> pd.D
     return out
 
 
-def plot_added_variable(df_sub: pd.DataFrame, health: str, pred: str, controls: list[str], outpath: str) -> None:
+def plot_added_variable(df_sub: pd.DataFrame, health: str, pred: str, controls: list[str], outpath: str, standardized: bool = False) -> None:
     """
     Added-variable / partial regression style plot:
     residual(health | controls) vs residual(pred | controls)
     """
-    # residualize both against controls
     Xc = df_sub[controls]
     ry = residualize(df_sub[health], Xc)
     rx = residualize(df_sub[pred], Xc)
 
     plt.figure()
     plt.scatter(rx, ry, alpha=ALPHA)
-    # simple OLS line through residuals
+
     m = sm.OLS(ry, sm.add_constant(rx, has_constant="add")).fit()
     xs = np.linspace(np.nanmin(rx), np.nanmax(rx), 200)
     ys = m.params[0] + m.params[1] * xs
     plt.plot(xs, ys)
 
-    plt.title(f"Added-variable plot: {health} ~ {pred} | {', '.join(controls)}\n"
-              f"OLS slope={m.params[1]:.3g}, p={m.pvalues[1]:.3g}")
-    plt.xlabel(f"{pred} residuals | controls")
-    plt.ylabel(f"{health} residuals | controls")
+    tag = " (standardized)" if standardized else ""
+    plt.title(
+        f"Added-variable plot{tag}: {health} ~ {pred} | {', '.join(controls)}\n"
+        f"OLS slope={m.params[1]:.3g}, p={m.pvalues[1]:.3g}"
+    )
+    plt.xlabel(f"{pred} residuals | controls" + (" (z)" if standardized else ""))
+    plt.ylabel(f"{health} residuals | controls" + (" (z)" if standardized else ""))
     plt.tight_layout()
     plt.savefig(outpath, dpi=FIG_DPI)
     plt.close()
+
 
 def fit_gam(df_sub: pd.DataFrame, health: str, pred: str, controls: list[str]):
     """
@@ -597,6 +611,47 @@ def plot_distributions_normality_with_transforms(
 
     return pd.DataFrame(rows)
 
+def zscore_series(s: pd.Series, eps: float = 1e-12) -> pd.Series:
+    s = pd.to_numeric(s, errors="coerce")
+    mu = s.mean()
+    sd = s.std(ddof=0)
+    if pd.isna(sd) or sd < eps:
+        # avoid divide-by-zero; return centered zeros where possible
+        return (s - mu) * 0.0
+    return (s - mu) / sd
+
+def maybe_standardize_subset(
+    df_sub: pd.DataFrame,
+    health: str,
+    pred: str,
+    controls: list[str],
+    do: bool,
+    what: str = "all_model_vars",
+    method: str = "zscore",
+    eps: float = 1e-12
+) -> tuple[pd.DataFrame, str]:
+    """
+    Returns (df_out, tag) where tag is "" or "__z" for filenames/titles.
+    Standardizes within df_sub (after NA drop + filtering), so plots/models match.
+    """
+    if not do:
+        return df_sub, ""
+
+    df_out = df_sub.copy()
+    if method != "zscore":
+        raise ValueError(f"Unsupported STANDARDIZE_METHOD: {method}")
+
+    if what == "predictors_only":
+        cols = [pred] + controls
+    elif what == "all_model_vars":
+        cols = [health, pred] + controls
+    else:
+        raise ValueError(f"Unsupported STANDARDIZE_WHAT: {what}")
+
+    for c in cols:
+        df_out[c] = zscore_series(df_out[c], eps=eps)
+
+    return df_out, "__z"
 
 # ----------------------------
 # MAIN
@@ -657,6 +712,22 @@ def main():
             if n < 50:
                 print(f"Skipping {health} ~ {pred}: only n={n}")
                 continue
+
+            # ----------------------------
+            # OPTIONAL: STANDARDIZE
+            # ----------------------------
+            df_sub, ztag = maybe_standardize_subset(
+                df_sub=df_sub,
+                health=health,
+                pred=pred,
+                controls=CONTROL_VARS,
+                do=STANDARDIZE,
+                what=STANDARDIZE_WHAT,
+                method=STANDARDIZE_METHOD,
+                eps=STANDARDIZE_EPS
+            )
+            is_std = (ztag != "")
+
 
             # ----------------------------
             # 1) Partial Spearman (Pingouin)

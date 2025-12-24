@@ -1,218 +1,155 @@
-
-# ==============================================
-# Quick visualisations script (save to PNG files)
-# ==============================================
-
 """
-Maak scatterplots met ongecontroleerde clustering (KMeans) en plot fenologische curves
-op basis van de output-CSV's van het hoofdscript.
+This script generates exploratory scatterplots to visualise simple, unmodelled
+relationships between urban environment variables and tree seasonal canopy
+performance.
 
-Gebruik:
-- Pas de paden/instellingen onderaan aan en voer dit script uit (zelfde map is handig).
-- Output gaat naar OUT_DIR (png-bestanden + een CSV met clusterlabels).
+For each tree species (stored in a separate input CSV), the script produces:
+1) NO₂ annual mean vs season-integrated NDVI (AUC), and
+2) Impervious surface fraction vs season-integrated NDVI (AUC).
+
+Plots are intended for qualitative assessment only and do not account for
+covariates, spatial structure, or nonlinearity. They are used to complement
+partial-correlation and GAM-based analyses by illustrating raw data structure,
+variance, and potential species-specific response patterns.
+
+Optional LOWESS smoothing is applied to highlight broad trends without imposing
+a parametric model.
 """
 
-# --------- Hard-coded paden & instellingen ---------
-METRICS_CSV = r"/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Statistical analysis/metrics_per_boom.csv"  # of bv. r"out/metrics_per_boom.csv"
-TIMESERIES_CSV = r"/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Statistical analysis/tijdreeksen_per_boom.csv" # of bv. r"out/tijdreeksen_per_boom.csv"
-OUT_DIR = r"/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Statistical analysis/out_figs"
-N_CLUSTERS = 5
-N_SAMPLES_PER_CLUSTER = 8
-RANDOM_SEED = 42
-
-import os
-import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from itertools import combinations
+from statsmodels.nonparametric.smoothers_lowess import lowess
+from scipy.stats import spearmanr
+from pathlib import Path
 
-try:
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.cluster import KMeans
-    from sklearn.metrics import silhouette_score
-    from sklearn.decomposition import PCA
-except Exception as _e:
-    StandardScaler = None
-    KMeans = None
-    silhouette_score = None
-    PCA = None
-    print("Waarschuwing: scikit-learn niet beschikbaar; clustering/ PCA is uitgeschakeld.")
+# ----------------------------
+# USER SETTINGS
+# ----------------------------
 
+DATA_FILES = {
+    "Acer platanoides": '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/Acer platanoides/ndvi_metrics_with_impervious.csv',
+    "Acer pseudoplatanus": '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/Acer pseudoplatanus/ndvi_metrics_with_impervious.csv',
+    "Aesculus hippocastanum": '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/Aesculus hippocastanum /ndvi_metrics_with_impervious.csv',
+    "Platanus × acerifolia": '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/Platanus x acerifolia/ndvi_metrics_with_impervious.csv',
+    "Tilia × euchlora": '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/Tilia x euchlora/ndvi_metrics_with_impervious.csv',
+}
 
-def ensure_outdir(path: str):
-    os.makedirs(path, exist_ok=True)
+AUC_COL = "auc_above_base_full"
+NO2_COL = "poll_no2_anmean"
+IMPERV_COL = "impervious_r50"   # change buffer if desired
 
+ALPHA = 0.25
+POINT_SIZE = 12
+SMOOTH = True
+SMOOTH_FRAC = 0.3
 
-def load_and_prepare_metrics(path: str):
-    df = pd.read_csv(path)
-    # Verwachte numerieke metrics (pas aan als je meer wilt meenemen)
-    num_cols = [
-        'peak_value', 'peak_doy', 'SOS_doy', 'decline_slope_per_day'
-    ]
-    present = [c for c in num_cols if c in df.columns]
-    sub = df[['tree_id'] + present].copy()
-    sub = sub.replace([np.inf, -np.inf], np.nan).dropna()
-    return df, sub, present
-
-
-def cluster_metrics(sub: pd.DataFrame, feature_cols: list, n_clusters: int, seed: int):
-    if KMeans is None or StandardScaler is None:
-        sub['cluster'] = 0
-        return sub, None, None
-    X = sub[feature_cols].values
-    n_clusters = max(2, min(n_clusters, len(sub)))
-    scaler = StandardScaler()
-    Xs = scaler.fit_transform(X)
-    km = KMeans(n_clusters=n_clusters, n_init=20, random_state=seed)
-    labels = km.fit_predict(Xs)
-    sub = sub.copy()
-    sub['cluster'] = labels
-    sil = None
-    if silhouette_score is not None and len(np.unique(labels)) > 1 and len(sub) > n_clusters:
-        with np.errstate(invalid='ignore'):
-            sil = float(silhouette_score(Xs, labels))
-    return sub, scaler, sil
+FIG_DPI = 300
+OUTDIR = Path('/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Figures paper/scatterplot vars')
+OUTDIR.mkdir(exist_ok=True)
 
 
-def palette(n: int):
-    # eenvoudige cyclische kleuren (laat matplotlib defaults bepalen)
-    return list(range(n))
+# ----------------------------
+# HELPERS
+# ----------------------------
+
+def safe_species_name(s: str) -> str:
+    return s.replace(" ", "_").replace("×", "x").replace("/", "-")
 
 
-def scatter_pair_plots(sub: pd.DataFrame, feature_cols: list, out_dir: str, sil=None):
-    clusters = sorted(sub['cluster'].unique())
-    for x, y in combinations(feature_cols, 2):
-        fig, ax = plt.subplots(figsize=(7, 5))
-        for k in clusters:
-            ss = sub[sub['cluster'] == k]
-            ax.scatter(ss[x], ss[y], label=f"cluster {k}", alpha=0.8)
-        ax.set_xlabel(x)
-        ax.set_ylabel(y)
-        title = f"{y} vs {x} (KMeans)"
-        if sil is not None:
-            title += f" — silhouette={sil:.2f}"
-        ax.set_title(title)
-        ax.legend(title="cluster")
-        fig.tight_layout()
-        fig.savefig(os.path.join(out_dir, f"scatter_{y}_vs_{x}.png"), dpi=150)
-        plt.close(fig)
+def annotate_spearman(ax, x, y):
+    """Compute and annotate Spearman rho on a plot."""
+    if len(x) < 3:
+        txt = "ρ = NA\nn < 3"
+    else:
+        rho, _ = spearmanr(x, y)
+        txt = f"ρ = {rho:.2f}\nn = {len(x)}"
+
+    ax.text(
+        0.02,
+        0.98,
+        txt,
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=9,
+        bbox=dict(boxstyle="round,pad=0.25", facecolor="white", alpha=0.8),
+    )
 
 
-def pca_scatter(sub: pd.DataFrame, feature_cols: list, out_dir: str, sil=None):
-    if PCA is None or StandardScaler is None:
-        return
-    X = sub[feature_cols].values
-    Xs = StandardScaler().fit_transform(X)
-    pca = PCA(n_components=2, random_state=RANDOM_SEED)
-    XY = pca.fit_transform(Xs)
-    fig, ax = plt.subplots(figsize=(7, 5))
-    for k in sorted(sub['cluster'].unique()):
-        ss = XY[sub['cluster'] == k]
-        ax.scatter(ss[:, 0], ss[:, 1], label=f"cluster {k}")
-    ax.set_xlabel("PC1")
-    ax.set_ylabel("PC2")
-    var = pca.explained_variance_ratio_
-    title = f"PCA scatter (PC1 {var[0]*100:.1f}%, PC2 {var[1]*100:.1f}%)"
-    if sil is not None:
-        title += f" — silhouette={sil:.2f}"
+def scatter_simple(
+    df: pd.DataFrame,
+    xcol: str,
+    ycol: str,
+    xlabel: str,
+    ylabel: str,
+    title: str,
+    outfile: Path,
+):
+    fig, ax = plt.subplots(figsize=(5, 4), constrained_layout=True)
+
+    ax.scatter(df[xcol], df[ycol], s=POINT_SIZE, alpha=ALPHA)
+
+    if SMOOTH and len(df) > 20:
+        sm = lowess(df[ycol], df[xcol], frac=SMOOTH_FRAC, return_sorted=True)
+        ax.plot(sm[:, 0], sm[:, 1])
+
+    annotate_spearman(ax, df[xcol], df[ycol])
+
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
     ax.set_title(title)
-    ax.legend(title="cluster")
-    fig.tight_layout()
-    fig.savefig(os.path.join(out_dir, "pca_scatter.png"), dpi=150)
-    plt.close(fig)
+
+    plt.savefig(outfile, dpi=FIG_DPI)
+    plt.close()
 
 
-def load_timeseries(path: str):
-    ts = pd.read_csv(path)
-    need = ['tree_id', 'doy']
-    for c in need:
-        if c not in ts.columns:
-            raise ValueError(f"Kolom ontbreekt in timeseries: {c}")
-    return ts
+# ----------------------------
+# MAIN LOOP
+# ----------------------------
 
+for species, path in DATA_FILES.items():
+    print(f"Processing {species}  ({path})")
 
-def phenology_overlay_means(ts: pd.DataFrame, clusters_df: pd.DataFrame, out_dir: str):
-    # koppel clusters
-    lab = clusters_df[['tree_id', 'cluster']]
-    ts2 = ts.merge(lab, on='tree_id', how='inner')
-    # Gebruik NDVI_fit als beschikbaar, anders NDVI
-    ycol = 'NDVI_fit' if 'NDVI_fit' in ts2.columns and ts2['NDVI_fit'].notna().any() else 'NDVI'
-    # Gemiddelde per cluster-per DOY
-    mean_df = ts2.groupby(['cluster', 'doy'])[ycol].mean().reset_index()
+    df = pd.read_csv(path)
 
-    fig, ax = plt.subplots(figsize=(9, 5))
-    for k, grp in mean_df.groupby('cluster'):
-        ax.plot(grp['doy'], grp[ycol], label=f"cluster {k}")
-    ax.set_xlabel('DOY')
-    ax.set_ylabel(ycol)
-    ax.set_title('Gemiddelde fenologie per cluster')
-    ax.legend(title='cluster')
-    fig.tight_layout()
-    fig.savefig(os.path.join(out_dir, "phenology_mean_by_cluster.png"), dpi=150)
-    plt.close(fig)
+    # Remove invalid NO2 values
+    if NO2_COL in df.columns:
+        df = df[df[NO2_COL].isna() | (df[NO2_COL] >= 0)].copy()
 
+    sp_tag = safe_species_name(species)
 
-def phenology_examples(ts: pd.DataFrame, clusters_df: pd.DataFrame, metrics_full: pd.DataFrame,
-                       out_dir: str, n_per_cluster: int, seed: int):
-    rng = np.random.default_rng(seed)
-    lab = clusters_df[['tree_id', 'cluster']]
-    ts2 = ts.merge(lab, on='tree_id', how='inner')
-    # voor markers
-    mcols = ['tree_id', 'peak_doy', 'SOS_doy']
-    msub = metrics_full[mcols].dropna()
+    # 1) NO2 vs AUC
+    d1 = df.dropna(subset=[NO2_COL, AUC_COL])
+    scatter_simple(
+        df=d1,
+        xcol=NO2_COL,
+        ycol=AUC_COL,
+        xlabel="NO₂ annual mean",
+        ylabel="Season-integrated NDVI (AUC)",
+        title=f"{species}: NO₂ vs seasonal NDVI (AUC)",
+        outfile=OUTDIR / f"scatter_no2_vs_auc_{sp_tag}.png",
+    )
 
-    for k in sorted(clusters_df['cluster'].unique()):
-        ids = clusters_df[clusters_df['cluster'] == k]['tree_id'].unique()
-        if len(ids) == 0:
-            continue
-        sel = rng.choice(ids, size=min(n_per_cluster, len(ids)), replace=False)
-        fig, ax = plt.subplots(figsize=(9, 5))
-        for tid in sel:
-            s = ts2[ts2['tree_id'] == tid].sort_values('doy')
-            ycol = 'NDVI_fit' if 'NDVI_fit' in s.columns and s['NDVI_fit'].notna().any() else 'NDVI'
-            ax.plot(s['doy'], s[ycol], alpha=0.9, label=f"tree {tid}")
-            mm = msub[msub['tree_id'] == tid]
-            if not mm.empty:
-                pdoy = float(mm['peak_doy'].values[0])
-                sdoy = float(mm['SOS_doy'].values[0])
-                # Markers op curve (zoek dichtstbijzijnde DOY-index)
-                if np.isfinite(pdoy):
-                    ax.scatter(pdoy, np.interp(pdoy, s['doy'], s[ycol]), marker='^')
-                if np.isfinite(sdoy):
-                    ax.scatter(sdoy, np.interp(sdoy, s['doy'], s[ycol]), marker='x')
-        ax.set_xlabel('DOY')
-        ax.set_ylabel('NDVI (fit)')
-        ax.set_title(f'Fenologie voorbeelden — cluster {k}')
-        ax.legend(ncol=2, fontsize=8)
-        fig.tight_layout()
-        fig.savefig(os.path.join(out_dir, f"phenology_examples_cluster_{k}.png"), dpi=150)
-        plt.close(fig)
+    # 2) Impervious vs AUC
+    d2 = df.dropna(subset=[IMPERV_COL, AUC_COL])
+    scatter_simple(
+        df=d2,
+        xcol=IMPERV_COL,
+        ycol=AUC_COL,
+        xlabel=f"Impervious surface fraction ({IMPERV_COL})",
+        ylabel="Season-integrated NDVI (AUC)",
+        title=f"{species}: Impervious vs seasonal NDVI (AUC)",
+        outfile=OUTDIR / f"scatter_impervious_vs_auc_{sp_tag}.png",
+    )
 
-
-def run_viz():
-    ensure_outdir(OUT_DIR)
-
-    # 1) Metrics laden en clusteren
-    metrics_full, sub, features = load_and_prepare_metrics(METRICS_CSV)
-    clustered, scaler, sil = cluster_metrics(sub, features, N_CLUSTERS, RANDOM_SEED)
-
-    # Bewaar clusterlabels
-    narrow = clustered[['tree_id', 'cluster']]
-    out_labels_csv = os.path.join(OUT_DIR, 'cluster_labels.csv')
-    narrow.to_csv(out_labels_csv, index=False)
-
-    # 2) Scatterplots en PCA
-    scatter_pair_plots(clustered, features, OUT_DIR, sil=sil)
-    pca_scatter(clustered, features, OUT_DIR, sil=sil)
-
-    # 3) Fenologie plots
-    ts = load_timeseries(TIMESERIES_CSV)
-    phenology_overlay_means(ts, clustered, OUT_DIR)
-    phenology_examples(ts, clustered, metrics_full, OUT_DIR, N_SAMPLES_PER_CLUSTER, RANDOM_SEED)
-
-    print(f"Klaar. Figuren staan in: {OUT_DIR}, Clusterlabels: {out_labels_csv}")
-
-
-# Voer only-out-viz uit als je dit script runt
-if __name__ == '__main__':
-    run_viz()
+    # 3) NO2 vs Impervious
+    d3 = df.dropna(subset=[NO2_COL, IMPERV_COL])
+    scatter_simple(
+        df=d3,
+        xcol=IMPERV_COL,
+        ycol=NO2_COL,
+        xlabel=f"Impervious surface fraction ({IMPERV_COL})",
+        ylabel="NO₂ annual mean",
+        title=f"{species}: NO₂ vs imperviousness",
+        outfile=OUTDIR / f"scatter_no2_vs_impervious_{sp_tag}.png",
+    )
