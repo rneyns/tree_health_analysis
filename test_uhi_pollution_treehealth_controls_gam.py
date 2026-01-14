@@ -5,10 +5,10 @@ Goal
 - Investigate associations between tree health metrics and:
   (A) UHI proxy (LST variables)
   (B) Pollution proxy (NO2 variable)
-- While controlling for imperviousness and tree height.
+- While controlling for tree height.
 - Methods:
-  1) Partial Spearman correlations (Pingouin): health ~ predictor | {imperv_10m, height}
-  2) GAMs (pyGAM): health ~ s(predictor) + s(imperv_10m) + s(height)
+  1) Partial Spearman correlations (Pingouin): health ~ predictor | {height}
+  2) GAMs (pyGAM): health ~ s(predictor)  + s(height)
   3) Added-variable style residual plots:
        resid(health | controls) vs resid(predictor | controls)
   4) GAM partial dependence plots for the focal predictor
@@ -48,7 +48,7 @@ RAW_DATA_CSV = "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health
 OUT_DIR = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations'
 
 # Controls (always used)
-CONTROL_VARS = ["imperv_10m", "height"]
+CONTROL_VARS = ["height"]
 
 # Focal predictors: UHI + pollution
 UHI_VARS = ["lst_temp_r50_y", "lst_temp_r100_y"]

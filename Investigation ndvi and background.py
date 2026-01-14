@@ -31,7 +31,7 @@ import statsmodels.formula.api as smf
 # -----------------------------------------------------------------------------
 
 # Paths
-NDVI_METRICS_PATH = r"/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/tilia x euchlora/ndvi_metrics_clean.csv"
+NDVI_METRICS_PATH = r"/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/acer platanoides/ndvi_metrics_clean.csv"
 TREE_CROWNS_PATH  = r"/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Tree mapping/Tree locations/flai layers/crown_shapes_final_CRS.shp"
 
 # Already crown-masked impervious raster
@@ -41,10 +41,10 @@ IMPERVIOUS_RASTER_PATH = r"/Users/robbe_neyns/Documents/Work_local/research/UHI 
 LST_RASTER_PATH = r'/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/LST_July_lambert.tif'
 
 # Outputs
-OUTPUT_CSV = r"/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/ndvi_metrics_with_impervious.csv"
-OUTPUT_GPKG = r"/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/trees_with_ndvi_impervious.gpkg"
+OUTPUT_CSV = r"/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/acer platanoides/ndvi_metrics_with_impervious.csv"
+OUTPUT_GPKG = r"/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/acer platanoides/trees_with_ndvi_impervious.gpkg"
 GPKG_LAYER  = "trees_with_attrs"
-OUTPUT_SHP  = r"/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/trees_with_ndvi_impervious.shp"
+OUTPUT_SHP  = r"/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/acer platanoides/trees_with_ndvi_impervious.shp"
 
 # Columns / IDs
 TREE_ID_COL  = "tree_id"    # in CSV

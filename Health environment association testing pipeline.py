@@ -11,7 +11,7 @@ from statsmodels.stats.multitest import multipletests  # for optional FDR correc
 # USER SETTINGS
 # ----------------------------
 
-DATA_PATH = "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/ndvi_metrics_with_impervious.csv"
+DATA_PATH = "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/acer platanoides/ndvi_metrics_with_impervious.csv"
 
 health_vars = [
     "ndvi_peak",
@@ -49,7 +49,7 @@ CONTROL_VAR = "height"
 DROP_POLLUTION_NEGATIVE = True  # remove any rows where any poll_* < 0
 
 # Outputs
-OUTDIR = Path("/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/corr_outputs")
+OUTDIR = Path("/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/acer platanoides/corr_outputs")
 OUTDIR.mkdir(exist_ok=True)
 SCATTER_DIR_ALL = OUTDIR / "scatterplots_all_pairs"
 SCATTER_DIR_ALL.mkdir(exist_ok=True)
