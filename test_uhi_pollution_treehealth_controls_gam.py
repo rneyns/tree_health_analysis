@@ -44,8 +44,8 @@ from scipy.stats import normaltest, shapiro, probplot
 # USER SETTINGS
 # ----------------------------
 
-RAW_DATA_CSV = "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/ndvi_metrics_with_impervious.csv"
-OUT_DIR = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations'
+RAW_DATA_CSV = "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/platanus x acerifolia/ndvi_metrics_with_impervious.csv"
+OUT_DIR = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/platanus x acerifolia'
 
 # Controls (always used)
 CONTROL_VARS = ["height"]
@@ -58,15 +58,12 @@ FOCAL_PREDICTORS = UHI_VARS + POLLUTION_VARS
 
 # Health metrics: (suggested: deprioritize ndvi_peak/base if you want)
 HEALTH_VARS = [
-    # "ndvi_peak",           # optional: often background-driven
+    "ndvi_peak",           # optional: often background-driven
     # "ndvi_base",           # optional: often background-driven
-    "amplitude",
-    "auc_above_base_full",
+    "sos_doy",
     "los_days",
-    "slope_sos_peak",
-    "senescence_rate",
-    # you can add timing metrics if you want to test them too:
-     "sos_doy", "peak_doy", "eos_doy"
+    "amplitude",
+    "auc_above_base_full"
 ]
 
 # GAM flexibility
@@ -174,20 +171,22 @@ def plot_added_variable(df_sub: pd.DataFrame, health: str, pred: str, controls: 
 def fit_gam(df_sub: pd.DataFrame, health: str, pred: str, controls: list[str]):
     """
     Fit GAM:
-      health ~ s(pred) + s(control1) + s(control2)
+      health ~ s(pred) + sum_i s(control_i)
     Uses gridsearch over lambda for smoothing.
-    Returns fitted model + design matrix column order.
+    Returns fitted model + column order.
     """
     cols = [pred] + controls
     X = df_sub[cols].values.astype(float)
     y = df_sub[health].values.astype(float)
 
-    # Terms: s(0) for pred, then s(1), s(2) for controls
-    gam = LinearGAM(
-        s(0, n_splines=N_SPLINES) + s(1, n_splines=N_SPLINES) + s(2, n_splines=N_SPLINES)
-    ).gridsearch(X, y, lam=LAM_GRID, progress=False)
+    # Build terms dynamically: s(0) for pred + s(1), s(2), ... for controls
+    terms = s(0, n_splines=N_SPLINES)
+    for j in range(1, len(cols)):
+        terms = terms + s(j, n_splines=N_SPLINES)
 
+    gam = LinearGAM(terms).gridsearch(X, y, lam=LAM_GRID, progress=False)
     return gam, cols
+
 
 def plot_gam_partial_dependence(gam, cols: list[str], pred: str, outpath: str) -> None:
     """

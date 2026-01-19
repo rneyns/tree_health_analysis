@@ -1,737 +1,392 @@
 #!/usr/bin/env python3
 """
-RF vs GAM (non-spatial) vs GeoGAM (spatial smooth) with K-fold Cross-Validation
-+ Moran's I on TEST residuals
-+ Semivariogram diagnostics (empirical variograms) for paper figures
+Run the SAME (non-spatial) GAM workflow for MULTIPLE species CSVs.
 
-What this script does
----------------------
-1) Loads a per-tree metrics CSV (response + predictors + tree_id)
-2) Joins lon/lat from a tree layer (shp/gpkg) by ID
-3) Builds either RANDOM K-fold CV or SPATIAL K-fold CV (via coordinate clustering)
-4) For each fold (TRAIN -> fit, TEST -> evaluate):
-   - RF baseline
-   - GAM (non-spatial) with non-linear smooths for chosen predictors
-   - GeoGAM (spatial GAM) = same GAM + a 2D spatial smooth te(lon, lat)
-   - Computes R2 and MAE on TRAIN and TEST
-   - Computes Moran's I on TEST residuals for each model
-5) Saves per-fold predictions/residuals and fold-level metrics
-6) Exports TEST points as GPKG for QGIS
-7) Creates paper-ready diagnostics for fold 1:
-   - residual histograms
-   - observed vs predicted
-   - residual maps (GeoGAM)
-   - RF feature importance (MDI) plot
-   - semivariograms of TEST residuals (GAM vs GeoGAM) (+ optional raw y)
+For each species:
+- Load CSV
+- Clean/ensure numeric
+- Optional biological filters
+- Optional z-score standardization (recommended for comparing effect sizes)
+- Fit GAMs: health ~ s(pred) + s(height) (+ optional extra controls)
+- Quantify "importance" of each predictor for each health metric using
+  Δ explained deviance (pseudo-R²) when dropping that predictor:
+      delta = R2_full - R2_drop(pred)
+  (computed using out-of-fold CV predictions)
+- Create:
+  (1) per-species barplots of predictor importance (summed/averaged across health metrics)
+  (2) per-species heatmap-like alternative: a "lollipop matrix" (dot plot) of deltas
+      (avoids another heatmap, but still compact)
+  (3) one combined overview across species
 
-Dependencies
-------------
-pip install numpy pandas matplotlib scikit-learn geopandas shapely esda==2.5 libpysal pygam scikit-gstat
-
-Notes
------
-- The GAMs here are implemented via pyGAM (LinearGAM), which supports smooth terms s()
-  and tensor-product smooth te().
-- Tree height is included as a *smooth control* term: we control for it but do not
-  interpret it causally.
+Notes:
+- This script does NOT do GeoGAM / Moran / spatial CV. It matches your "ndvi background investigations"
+  species CSVs and produces GAM contribution summaries.
+- If you want the spatial CV + Moran workflow across species too, we can extend this later.
 """
 
 import os
 import warnings
+warnings.filterwarnings("ignore")
+
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import r2_score, mean_absolute_error
-from sklearn.cluster import MiniBatchKMeans
 from sklearn.model_selection import KFold
+from sklearn.metrics import r2_score
 
-import geopandas as gpd
+from pygam import LinearGAM, s, l
 
-# ------------------- CONFIG -------------------
-# Data
-METRICS_CSV     = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Data/PlanetScope/platanus x acerifolia/ndvi_metrics_clean.csv'
-TREE_LAYER_PATH = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/Environmental variables/tree layers/platanus_x_acerifolia.shp'
-TREE_LAYER_NAME = None  # set if layer is inside a GPKG
-CSV_ID_COL      = "tree_id"
-LAYER_ID_COL    = "crown_id"
 
-TARGET_COL      = "auc_above_base_full"
-LON_COL         = "lon"
-LAT_COL         = "lat"
+# ----------------------------
+# USER SETTINGS
+# ----------------------------
 
-# --- Choose predictors and how they enter the GAM ---
-# You said: non-linear for height + impervious + temperature; linear for pollution
-HEIGHT_COL      = "height"
+# Each CSV should contain columns for: HEALTH_VARS + PREDICTORS + CONTROL_VARS
+SPECIES_CSVS = {
+    "Acer_platanoides": "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/acer platanoides/ndvi_metrics_with_impervious.csv",
+    "Acer_pseudoplatanus": "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/acer pseudoplatanus/ndvi_metrics_with_impervious.csv",
+    "Aesculus_hippocastanum": "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/aesculus hippocastanum/ndvi_metrics_with_impervious.csv",
+    "Platanus_x_acerifolia": "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/platanus x acerifolia/ndvi_metrics_with_impervious.csv",
+    "Tilia_x_euchlora": "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/tilia x euchlora/ndvi_metrics_with_impervious.csv",
+}
 
-# Pick ONE impervious metric to avoid collinearity in GAM smooths
-# (RF can still use multiple, but GAM will be more stable with one.)
-IMP_COL         = "impervious_r50"
+OUT_ROOT = Path("/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/_GAM_MULTI_SPECIES")
+OUT_ROOT.mkdir(parents=True, exist_ok=True)
 
-# Pick ONE temperature metric
-TEMP_COL        = "temp_r200"
+# Variables
+CONTROL_VARS = ["height"]
 
-# Pollution terms (linear)
-POLL_COLS       = ["poll_pm25_anmean", "poll_pm10_anmean", "poll_no2_anmean", "poll_bc_anmean"]
+# Use a small, publishable subset (your “results section” set)
+HEALTH_VARS = ["ndvi_peak", "sos_doy", "los_days", "amplitude", "auc_above_base_full"]
 
-# RF uses a broader set (can be same as GAM or larger)
-FEATURE_COLS_RF = [
-    HEIGHT_COL,
-    *POLL_COLS,
-    "impervious_r10","impervious_r20","impervious_r50","impervious_r100",
-    "temp_r100","temp_r200"
+# Predictors you wanted in the small results matrix
+# (You can add/remove here; this list drives the GAM comparisons)
+PREDICTORS = [
+    "imperv_10m",
+    "poll_bc_anmean",
+    "lst_temp_r50_y",
+    "insolation9",
 ]
 
-OUTPUT_DIR      = '/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/spatial regression/platanus x acerifolia'
+# Optional: if you want to still include other predictors as controls (besides height),
+# put them here. They are always included as smooths but not ranked as "importance".
+EXTRA_CONTROLS = []  # e.g. ["imperv_50m"]
 
-# CV
-N_FOLDS         = 10
-USE_SPATIAL_CV  = False     # True => spatially blocked folds via clustering
-N_CLUSTERS      = 60
-RANDOM_STATE    = 42
+# GAM settings
+N_SPLINES = 10
+LAM_GRID = np.logspace(-3, 3, 13)
+DO_GRIDSEARCH = True
 
-# RF baseline
-N_ESTIMATORS_RF  = 500
-MAX_FEATURES_RF  = "sqrt"
-N_JOBS_RF        = -1
+# CV settings
+N_FOLDS = 5
+RANDOM_STATE = 42
 
-# GAM / GeoGAM
-# k for univariate smooths: keep small to avoid overfitting and to be paper-friendly
-K_HEIGHT     = 6
-K_IMP        = 6
-K_TEMP       = 6
+# Data cleaning / filtering
+MIN_N = 80  # minimum rows per (health, model) to attempt
 
-# Spatial smooth flexibility
-K_SPATIAL    = (25, 25)   # basis sizes for lon, lat in te()
+STANDARDIZE = True   # strongly recommended if you compare effect sizes across variables/species
+EPS = 1e-12
 
-# Lambda search (penalization strength). A small grid is usually enough for CV loops.
-GAM_GRIDSEARCH = True
-LAM_GRID = np.logspace(-3, 3, 9)
+BIOLOGICAL_FILTERS = {
+    "los_days": lambda x: (x >= 60) & (x <= 365),
+    "sos_doy": lambda x: (x >= 1) & (x <= 250),
+    "ndvi_peak": lambda x: (x >= -0.1) & (x <= 1.0),
+    "amplitude": lambda x: (x >= -0.1) & (x <= 1.0),
+    "auc_above_base_full": lambda x: x > -1e9,  # keep broad; you can tighten if needed
+    "height": lambda x: x > 1,
+    "poll_bc_anmean": lambda x: x > 0,
+}
 
-# Moran's I settings
-MORAN_KNN_K  = 12
-
-# Variogram settings (for paper figure, fold 1 only)
-MAKE_VARIOGRAM_FOLD1 = True
-VGRAM_N_LAGS = 15
-VGRAM_MAXLAG = None   # set e.g. 300 (meters) if you use projected coords; for lon/lat keep None
-
-# ------------------------------------------------
+# Plot settings
+FIG_DPI = 240
+POINT_ALPHA = 0.9
 
 
-def ensure_packages():
-    try:
-        from pygam import LinearGAM, s, l, te  # noqa: F401
-        from esda.moran import Moran  # noqa: F401
-        import libpysal  # noqa: F401
-        from skgstat import Variogram  # noqa: F401
-    except Exception as e:
-        raise RuntimeError(
-            "Missing packages. Install with:\n"
-            "  pip install pygam esda==2.5 libpysal geopandas shapely "
-            "scikit-learn matplotlib pandas numpy scikit-gstat"
-        ) from e
+# ----------------------------
+# Helpers
+# ----------------------------
 
+def ensure_dir(p: Path) -> None:
+    p.mkdir(parents=True, exist_ok=True)
 
-# ---------------- Lambda helpers (avoid ragged lam issues) ----------------
-def lam_to_mean(lam):
-    """Flatten numeric content of pyGAM lam (ragged allowed) and return mean, else NaN."""
-    vals = []
+def zscore(s: pd.Series, eps: float = 1e-12) -> pd.Series:
+    s = pd.to_numeric(s, errors="coerce")
+    mu = s.mean()
+    sd = s.std(ddof=0)
+    if pd.isna(sd) or sd < eps:
+        return (s - mu) * 0.0
+    return (s - mu) / sd
 
-    def _collect(x):
-        if x is None:
-            return
-        if isinstance(x, (list, tuple)):
-            for y in x:
-                _collect(y)
-        elif isinstance(x, np.ndarray):
-            arr = np.asarray(x, dtype=float).ravel()
-            for v in arr:
-                if np.isfinite(v):
-                    vals.append(float(v))
-        else:
-            try:
-                v = float(x)
-                if np.isfinite(v):
-                    vals.append(v)
-            except Exception:
-                pass
-
-    _collect(lam)
-    return float(np.mean(vals)) if vals else float("nan")
-
-
-def lam_to_str(lam):
-    """Readable representation of pyGAM lam (ragged allowed)."""
-    try:
-        if isinstance(lam, (list, tuple)):
-            parts = []
-            for x in lam:
-                if isinstance(x, (list, tuple, np.ndarray)):
-                    arr = np.asarray(x, dtype=float).ravel()
-                    parts.append(f"[{arr.min():.2e}..{arr.max():.2e}]")
-                else:
-                    parts.append(f"{float(x):.2e}")
-            return ";".join(parts)
-        if isinstance(lam, np.ndarray):
-            arr = np.asarray(lam, dtype=float).ravel()
-            return f"[{arr.min():.2e}..{arr.max():.2e}]"
-        return f"{float(lam):.2e}"
-    except Exception:
-        return str(lam)
-
-
-# ---------------- Join lon/lat from layer by ID ----------------
-def add_coords_by_id(
-    df: pd.DataFrame,
-    layer_path: str,
-    layer_name: str | None,
-    csv_id_col: str,
-    layer_id_col: str,
-    to_crs: str = "EPSG:4326",
-    loncol: str = "lon",
-    latcol: str = "lat",
-    strict: bool = True
-) -> pd.DataFrame:
-    if csv_id_col not in df.columns:
-        raise ValueError(f"CSV is missing id column '{csv_id_col}'.")
-    gdf = gpd.read_file(layer_path, layer=layer_name) if layer_name else gpd.read_file(layer_path)
-    if layer_id_col not in gdf.columns:
-        raise ValueError(f"Tree layer is missing id column '{layer_id_col}'.")
-    if gdf.crs is None:
-        raise ValueError("Tree layer CRS is undefined; please define or reproject it first.")
-
-    # Convert any crown polygons to points (representative points)
-    def _as_point(geom):
-        if geom is None or geom.is_empty:
-            return None
-        if geom.geom_type == "Point":
-            return geom
-        if geom.geom_type == "MultiPoint":
-            return list(geom.geoms)[0] if len(geom.geoms) else None
-        return geom.representative_point()
-
-    gdf = gdf[gdf.geometry.notnull()].copy()
-    gdf["__pt"] = gdf.geometry.apply(_as_point)
-    gdf = gdf[gdf["__pt"].notnull()].set_geometry("__pt")
-
-    if to_crs:
-        gdf = gdf.to_crs(to_crs)
-
-    # De-duplicate IDs so merge is 1:1
-    gdf = gdf.drop_duplicates(subset=[layer_id_col])
-
-    coords = pd.DataFrame({
-        layer_id_col: gdf[layer_id_col].values,
-        loncol: gdf.geometry.x.values,
-        latcol: gdf.geometry.y.values,
-    }).rename(columns={layer_id_col: csv_id_col})
-
-    out = df.merge(coords, on=csv_id_col, how="left")
-
-    missing = out[loncol].isna() | out[latcol].isna()
-    if strict and int(missing.sum()) > 0:
-        some = out.loc[missing, csv_id_col].dropna().astype(str).unique()[:10]
-        raise ValueError(f"{int(missing.sum())} rows could not be matched by ID. Examples: {some}")
+def make_numeric(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    out = df.copy()
+    for c in cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
     return out
 
+def apply_filters(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    out = df.copy()
+    for c in cols:
+        if c in BIOLOGICAL_FILTERS:
+            out = out[BIOLOGICAL_FILTERS[c](out[c])]
+    return out
 
-# ---------------- Fold builders ----------------
-def make_spatial_folds(coords_xy: np.ndarray, n_folds=5, n_clusters=60, random_state=42):
+def build_terms(n_cols: int, smooth_cols: list[int], linear_cols: list[int]) -> object:
     """
-    Spatial folds via clustering (MiniBatchKMeans).
-    Points are clustered and clusters are assigned to folds to reduce spatial leakage.
+    Build pyGAM terms for a design matrix with n_cols features.
+    smooth_cols: indices to use s()
+    linear_cols: indices to use l()
     """
-    n = coords_xy.shape[0]
-    mbk = MiniBatchKMeans(
-        n_clusters=n_clusters,
-        random_state=random_state,
-        batch_size=2048,
-        n_init="auto"
-    )
-    labels = mbk.fit_predict(coords_xy)
+    terms = None
+    for j in range(n_cols):
+        if j in smooth_cols:
+            t = s(j, n_splines=N_SPLINES)
+        elif j in linear_cols:
+            t = l(j)
+        else:
+            # default to smooth if unspecified (safe)
+            t = s(j, n_splines=N_SPLINES)
 
-    clusters = [np.where(labels == c)[0] for c in np.unique(labels)]
-    clusters.sort(key=lambda idx: len(idx), reverse=True)
-
-    fold_tests = [[] for _ in range(n_folds)]
-    fold_sizes = [0] * n_folds
-
-    for idx in clusters:
-        j = int(np.argmin(fold_sizes))
-        fold_tests[j].append(idx)
-        fold_sizes[j] += len(idx)
-
-    folds = []
-    for j in range(n_folds):
-        test_idx = np.concatenate(fold_tests[j]) if fold_tests[j] else np.array([], dtype=int)
-        train_mask = np.ones(n, dtype=bool)
-        train_mask[test_idx] = False
-        train_idx = np.where(train_mask)[0]
-        folds.append((train_idx, test_idx))
-    return folds
-
-
-def make_random_folds(n, n_folds=10, random_state=42, shuffle=True):
-    kf = KFold(n_splits=n_folds, shuffle=shuffle, random_state=random_state)
-    return [(tr, te) for tr, te in kf.split(np.arange(n))]
-
-
-# ---------------- Plot helpers ----------------
-def plot_obs_pred(y_true, y_hat, name, out_dir, fname, target_label):
-    y_true = np.asarray(y_true, float).ravel()
-    y_hat  = np.asarray(y_hat,  float).ravel()
-    m = np.isfinite(y_true) & np.isfinite(y_hat)
-    y_true, y_hat = y_true[m], y_hat[m]
-    if y_true.size == 0:
-        return
-    lo = min(y_true.min(), y_hat.min())
-    hi = max(y_true.max(), y_hat.max())
-    plt.figure(figsize=(5.5, 5.5))
-    plt.scatter(y_true, y_hat, s=16, alpha=0.8)
-    plt.plot([lo, hi], [lo, hi], "k--", linewidth=1)
-    plt.xlabel(f"Observed {target_label}")
-    plt.ylabel(f"Predicted {target_label} ({name})")
-    plt.title(f"Observed vs Predicted ({name}) — TEST")
-    plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, fname), dpi=160)
-    plt.close()
-
-
-def plot_residual_hist(resid, title, out_dir, fname):
-    resid = np.asarray(resid, float)
-    resid = resid[np.isfinite(resid)]
-    if resid.size == 0:
-        return
-    plt.figure(figsize=(6, 4))
-    plt.hist(resid, bins=30, alpha=0.9)
-    plt.axvline(0, color="k", lw=1)
-    plt.title(title)
-    plt.xlabel("Residual")
-    plt.ylabel("Count")
-    plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, fname), dpi=160)
-    plt.close()
-
-
-def plot_residual_map(lon, lat, resid, title, out_dir, fname):
-    lon = np.asarray(lon, float)
-    lat = np.asarray(lat, float)
-    resid = np.asarray(resid, float)
-    m = np.isfinite(lon) & np.isfinite(lat) & np.isfinite(resid)
-    if m.sum() == 0:
-        return
-    plt.figure(figsize=(6, 5))
-    sc = plt.scatter(lon[m], lat[m], c=resid[m], s=18, cmap="RdBu", alpha=0.9)
-    plt.colorbar(sc, label="Residual")
-    plt.title(title)
-    plt.xlabel("Longitude")
-    plt.ylabel("Latitude")
-    plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, fname), dpi=160)
-    plt.close()
-
-
-def plot_rf_importance(feature_names, importances, out_dir, fname, title):
-    imp = np.asarray(importances, float)
-    order = np.argsort(imp)[::-1]
-    plt.figure(figsize=(7, 4))
-    plt.bar(range(len(order)), imp[order])
-    plt.xticks(range(len(order)), [feature_names[i] for i in order], rotation=45, ha="right")
-    plt.ylabel("MDI importance")
-    plt.title(title)
-    plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, fname), dpi=160)
-    plt.close()
-
-
-# ---------------- Variogram helper ----------------
-def plot_semivariograms(coords_xy, series_dict, out_dir, fname, n_lags=15, maxlag=None):
-    """
-    series_dict: dict(label -> values)
-    Uses scikit-gstat Variogram to compute empirical semivariogram.
-    """
-    from skgstat import Variogram
-
-    # If you keep lon/lat, distances will be in "degrees". That's okay for shape comparisons,
-    # but for a paper figure, a projected CRS (meters) is better.
-    plt.figure(figsize=(6.5, 4.5))
-    for label, vals in series_dict.items():
-        vals = np.asarray(vals, float)
-        m = np.isfinite(vals) & np.all(np.isfinite(coords_xy), axis=1)
-        if m.sum() < 10:
-            continue
-        V = Variogram(
-            coords_xy[m],
-            vals[m],
-            n_lags=n_lags,
-            maxlag=maxlag,
-            normalize=False
-        )
-        plt.plot(V.bins, V.experimental, "o-", label=label)
-
-    plt.xlabel("Distance")
-    plt.ylabel("Semivariance")
-    plt.title("Empirical semivariograms")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(os.path.join(out_dir, fname), dpi=160)
-    plt.close()
-
-
-# ---------------- Model builders ----------------
-def build_gam_terms(poll_count: int, include_spatial: bool):
-    """
-    Construct pyGAM terms for:
-      y ~ s(height) + s(imp) + s(temp) + linear(pollution...) [+ te(lon,lat)]
-    The order of columns in X_gam must match:
-      [height, imp, temp, poll..., lon, lat]
-    """
-    from pygam import s, l, te
-
-    # indices in X_gam
-    idx_height = 0
-    idx_imp    = 1
-    idx_temp   = 2
-    idx_poll0  = 3
-    idx_lon    = 3 + poll_count
-    idx_lat    = idx_lon + 1
-
-    terms = (
-            s(idx_height, n_splines=K_HEIGHT) +
-            s(idx_imp, n_splines=K_IMP) +
-            s(idx_temp, n_splines=K_TEMP)
-    )
-
-    for j in range(poll_count):
-        terms = terms + l(idx_poll0 + j)
-
-    if include_spatial:
-        terms = terms + te(idx_lon, idx_lat, n_splines=list(K_SPATIAL))
+        terms = t if terms is None else (terms + t)
     return terms
 
-
-def fit_gam(X_train, y_train, terms, do_gridsearch=True):
+def fit_gam_cv_delta_r2(df_sub: pd.DataFrame, health: str, predictors: list[str], controls: list[str]) -> pd.DataFrame:
     """
-    Fit a LinearGAM with optional lambda gridsearch on training data only.
+    For one health metric, compute ΔR2 (explained deviance / pseudo-R2 proxy) per predictor:
+      Δ = R2_full - R2_drop(pred)
+    using K-fold CV predictions to reduce optimism.
+
+    Returns a table with one row per predictor.
     """
-    from pygam import LinearGAM
+    cols_full = predictors + controls + EXTRA_CONTROLS
+    needed = [health] + cols_full
+    d = df_sub[needed].dropna().copy()
+    if len(d) < MIN_N:
+        return pd.DataFrame()
 
-    gam = LinearGAM(terms)
-    if do_gridsearch:
-        # gridsearch chooses smoothing penalty; keep grid modest inside CV loop
-        gam.gridsearch(X_train, y_train, lam=LAM_GRID, progress=False)
-    else:
-        gam.fit(X_train, y_train)
-    return gam
+    # standardize within this analysis subset (important!)
+    if STANDARDIZE:
+        for c in [health] + cols_full:
+            d[c] = zscore(d[c], eps=EPS)
 
+    y = d[health].values.astype(float)
 
-# ---------------- Main ----------------
-def main():
-    ensure_packages()
+    kf = KFold(n_splits=N_FOLDS, shuffle=True, random_state=RANDOM_STATE)
 
-    from esda.moran import Moran
-    import libpysal as lps
+    # Helper to CV-predict a given design matrix (X columns fixed)
+    def cv_predict(X: np.ndarray) -> np.ndarray:
+        yhat = np.full_like(y, np.nan, dtype=float)
+        # smooth everything (controls included) – consistent with your setup
+        smooth_cols = list(range(X.shape[1]))
+        linear_cols = []  # keep it simple here
+        terms = build_terms(X.shape[1], smooth_cols=smooth_cols, linear_cols=linear_cols)
+        for tr, te in kf.split(X):
+            gam = LinearGAM(terms)
+            if DO_GRIDSEARCH:
+                gam.gridsearch(X[tr], y[tr], lam=LAM_GRID, progress=False)
+            else:
+                gam.fit(X[tr], y[tr])
+            yhat[te] = gam.predict(X[te])
+        return yhat
 
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    # FULL model
+    X_full = d[cols_full].values.astype(float)
+    yhat_full = cv_predict(X_full)
+    r2_full = r2_score(y[np.isfinite(yhat_full)], yhat_full[np.isfinite(yhat_full)])
 
-    # 1) Load and validate columns
-    df = pd.read_csv(METRICS_CSV)
+    rows = []
+    for pred in predictors:
+        cols_drop = [c for c in cols_full if c != pred]
+        X_drop = d[cols_drop].values.astype(float)
+        yhat_drop = cv_predict(X_drop)
+        r2_drop = r2_score(y[np.isfinite(yhat_drop)], yhat_drop[np.isfinite(yhat_drop)])
 
-    required = [CSV_ID_COL, TARGET_COL, HEIGHT_COL, IMP_COL, TEMP_COL, *POLL_COLS, *FEATURE_COLS_RF]
-    missing = [c for c in required if c not in df.columns]
-    if missing:
-        raise ValueError(f"CSV missing columns: {missing}")
-
-    # 2) Join lon/lat
-    df = add_coords_by_id(
-        df=df,
-        layer_path=TREE_LAYER_PATH,
-        layer_name=TREE_LAYER_NAME,
-        csv_id_col=CSV_ID_COL,
-        layer_id_col=LAYER_ID_COL,
-        to_crs="EPSG:4326",
-        loncol=LON_COL,
-        latcol=LAT_COL,
-        strict=True
-    )
-
-    # 3) Filter invalid rows
-    needed = [TARGET_COL, LON_COL, LAT_COL, HEIGHT_COL, IMP_COL, TEMP_COL, *POLL_COLS, *FEATURE_COLS_RF]
-    df = df.dropna(subset=needed).reset_index(drop=True)
-    df = df[df[TARGET_COL] >= 0].reset_index(drop=True)
-    if df.empty:
-        raise ValueError("No valid rows after filtering NaNs/invalid values.")
-
-    # 4) Matrices
-    y_all = df[TARGET_COL].astype(float).values
-    coords_ll = df[[LON_COL, LAT_COL]].astype(float).values  # lon/lat
-
-    # RF matrix
-    X_rf = df[FEATURE_COLS_RF].astype(float).values
-
-    # GAM matrix (ordered)
-    gam_cols = [HEIGHT_COL, IMP_COL, TEMP_COL, *POLL_COLS, LON_COL, LAT_COL]
-    X_gam_all = df[gam_cols].astype(float).values
-
-    n = len(df)
-
-    # 5) Folds
-    if USE_SPATIAL_CV:
-        folds = make_spatial_folds(coords_ll, n_folds=N_FOLDS, n_clusters=N_CLUSTERS, random_state=RANDOM_STATE)
-    else:
-        folds = make_random_folds(n, n_folds=N_FOLDS, random_state=RANDOM_STATE)
-
-    # 6) Pre-build GAM term sets
-    poll_count = len(POLL_COLS)
-    terms_gam   = build_gam_terms(poll_count=poll_count, include_spatial=False)
-    terms_geog  = build_gam_terms(poll_count=poll_count, include_spatial=True)
-
-    all_preds = []
-    fold_metrics = []
-
-    for fold_id, (tr_idx, te_idx) in enumerate(folds, start=1):
-        if te_idx.size == 0 or tr_idx.size == 0:
-            print(f"[warn] Fold {fold_id} empty; skipping.")
-            continue
-
-        # Split
-        Xrf_tr, Xrf_te = X_rf[tr_idx], X_rf[te_idx]
-        Xg_tr,  Xg_te  = X_gam_all[tr_idx], X_gam_all[te_idx]
-        y_tr, y_te     = y_all[tr_idx], y_all[te_idx]
-        C_te           = coords_ll[te_idx]
-
-        # ---------- RF ----------
-        rf = RandomForestRegressor(
-            n_estimators=N_ESTIMATORS_RF,
-            max_features=MAX_FEATURES_RF,
-            random_state=RANDOM_STATE,
-            n_jobs=N_JOBS_RF
-        )
-        rf.fit(Xrf_tr, y_tr)
-        yhat_rf_tr = rf.predict(Xrf_tr)
-        yhat_rf_te = rf.predict(Xrf_te)
-
-        resid_rf_te = y_te - yhat_rf_te
-        w_rf = lps.weights.KNN.from_array(C_te, k=MORAN_KNN_K)
-        w_rf.transform = "r"
-        moran_rf = Moran(resid_rf_te, w_rf)
-
-        r2_rf_tr  = r2_score(y_tr, yhat_rf_tr)
-        mae_rf_tr = mean_absolute_error(y_tr, yhat_rf_tr)
-        r2_rf_te  = r2_score(y_te, yhat_rf_te)
-        mae_rf_te = mean_absolute_error(y_te, yhat_rf_te)
-
-        # ---------- GAM (non-spatial) ----------
-        gam = fit_gam(Xg_tr, y_tr, terms_gam, do_gridsearch=GAM_GRIDSEARCH)
-        yhat_gam_tr = gam.predict(Xg_tr)
-        yhat_gam_te = gam.predict(Xg_te)
-
-        resid_gam_te = y_te - yhat_gam_te
-        w_gam = lps.weights.KNN.from_array(C_te, k=MORAN_KNN_K)
-        w_gam.transform = "r"
-        moran_gam = Moran(resid_gam_te, w_gam)
-
-        r2_gam_tr  = r2_score(y_tr, yhat_gam_tr)
-        mae_gam_tr = mean_absolute_error(y_tr, yhat_gam_tr)
-        r2_gam_te  = r2_score(y_te, yhat_gam_te)
-        mae_gam_te = mean_absolute_error(y_te, yhat_gam_te)
-
-        lam_val_gam = getattr(gam, "lam", None)
-
-        # ---------- GeoGAM (spatial smooth) ----------
-        geogam = fit_gam(Xg_tr, y_tr, terms_geog, do_gridsearch=GAM_GRIDSEARCH)
-        yhat_geog_tr = geogam.predict(Xg_tr)
-        yhat_geog_te = geogam.predict(Xg_te)
-
-        resid_geog_te = y_te - yhat_geog_te
-        w_geog = lps.weights.KNN.from_array(C_te, k=MORAN_KNN_K)
-        w_geog.transform = "r"
-        moran_geog = Moran(resid_geog_te, w_geog)
-
-        r2_geog_tr  = r2_score(y_tr, yhat_geog_tr)
-        mae_geog_tr = mean_absolute_error(y_tr, yhat_geog_tr)
-        r2_geog_te  = r2_score(y_te, yhat_geog_te)
-        mae_geog_te = mean_absolute_error(y_te, yhat_geog_te)
-
-        lam_val_geog = getattr(geogam, "lam", None)
-
-        # ---------- Save fold metrics ----------
-        fold_metrics.append({
-            "fold": fold_id,
-            "n_train": int(len(tr_idx)),
-            "n_test": int(len(te_idx)),
-
-            "rf_r2_train": r2_rf_tr,
-            "rf_mae_train": mae_rf_tr,
-            "rf_r2_test": r2_rf_te,
-            "rf_mae_test": mae_rf_te,
-            "rf_moranI_test": moran_rf.I,
-            "rf_moranP_test": moran_rf.p_norm,
-
-            "gam_r2_train": r2_gam_tr,
-            "gam_mae_train": mae_gam_tr,
-            "gam_r2_test": r2_gam_te,
-            "gam_mae_test": mae_gam_te,
-            "gam_moranI_test": moran_gam.I,
-            "gam_moranP_test": moran_gam.p_norm,
-            "gam_lam_mean": lam_to_mean(lam_val_gam),
-            "gam_lam_str": lam_to_str(lam_val_gam),
-
-            "geogam_r2_train": r2_geog_tr,
-            "geogam_mae_train": mae_geog_tr,
-            "geogam_r2_test": r2_geog_te,
-            "geogam_mae_test": mae_geog_te,
-            "geogam_moranI_test": moran_geog.I,
-            "geogam_moranP_test": moran_geog.p_norm,
-            "geogam_lam_mean": lam_to_mean(lam_val_geog),
-            "geogam_lam_str": lam_to_str(lam_val_geog),
-
-            "gam_height_col": HEIGHT_COL,
-            "gam_imp_col": IMP_COL,
-            "gam_temp_col": TEMP_COL,
-            "gam_poll_cols": ",".join(POLL_COLS),
-            "geogam_spatial_k": f"{K_SPATIAL[0]}x{K_SPATIAL[1]}",
+        rows.append({
+            "health_metric": health,
+            "predictor": pred,
+            "r2_full_cv": r2_full,
+            "r2_drop_cv": r2_drop,
+            "delta_r2": r2_full - r2_drop,
+            "n": len(d),
         })
 
-        # ---------- Save per-tree TEST predictions ----------
-        fold_df = df.iloc[te_idx].copy()
-        fold_df["fold"] = fold_id
-        fold_df["split"] = "test"
+    return pd.DataFrame(rows)
 
-        fold_df["pred_rf"] = yhat_rf_te
-        fold_df["resid_rf"] = resid_rf_te
+def barplot_importance(df_imp: pd.DataFrame, title: str, outpath: Path):
+    if df_imp.empty:
+        return
+    # aggregate across health metrics
+    agg = (df_imp.groupby("predictor", as_index=False)
+           .agg(delta_r2_mean=("delta_r2", "mean"),
+                delta_r2_sum=("delta_r2", "sum")))
+    # sort by mean
+    agg = agg.sort_values("delta_r2_mean", ascending=False)
 
-        fold_df["pred_gam"] = yhat_gam_te
-        fold_df["resid_gam"] = resid_gam_te
+    plt.figure(figsize=(6.6, 3.8))
+    plt.bar(agg["predictor"], agg["delta_r2_mean"])
+    plt.xticks(rotation=45, ha="right")
+    plt.ylabel("Mean ΔR² (CV)")
+    plt.title(title)
+    plt.tight_layout()
+    plt.savefig(outpath, dpi=FIG_DPI)
+    plt.close()
 
-        fold_df["pred_geogam"] = yhat_geog_te
-        fold_df["resid_geogam"] = resid_geog_te
+def dotmatrix_importance(df_imp: pd.DataFrame, title: str, outpath: Path):
+    """
+    Heatmap alternative: dot-matrix (health metrics on y, predictors on x),
+    dot size encodes |ΔR²| and x-position is fixed (categorical).
+    """
+    if df_imp.empty:
+        return
 
-        all_preds.append(fold_df)
+    # keep order
+    predictors = list(dict.fromkeys(df_imp["predictor"].tolist()))
+    healths = list(dict.fromkeys(df_imp["health_metric"].tolist()))
 
-        # ---------- Fold 1 plots for paper ----------
-        if fold_id == 1:
-            plot_residual_hist(
-                resid_rf_te,
-                f"RF TEST residuals (fold 1)\nR2={r2_rf_te:.3f}, MAE={mae_rf_te:.3f}, Moran's I={moran_rf.I:.3f} (p={moran_rf.p_norm:.4f})",
-                OUTPUT_DIR, "residual_hist_rf_fold1_test.png"
-            )
-            plot_residual_hist(
-                resid_gam_te,
-                f"GAM (non-spatial) TEST residuals (fold 1)\nR2={r2_gam_te:.3f}, MAE={mae_gam_te:.3f}, Moran's I={moran_gam.I:.3f} (p={moran_gam.p_norm:.4f})",
-                OUTPUT_DIR, "residual_hist_gam_fold1_test.png"
-            )
-            plot_residual_hist(
-                resid_geog_te,
-                f"GeoGAM TEST residuals (fold 1)\nR2={r2_geog_te:.3f}, MAE={mae_geog_te:.3f}, Moran's I={moran_geog.I:.3f} (p={moran_geog.p_norm:.4f})",
-                OUTPUT_DIR, "residual_hist_geogam_fold1_test.png"
-            )
+    x_map = {p: i for i, p in enumerate(predictors)}
+    y_map = {h: i for i, h in enumerate(healths)}
 
-            plot_obs_pred(y_te, yhat_rf_te, "RF", OUTPUT_DIR, "obs_vs_pred_rf_fold1_test.png", TARGET_COL)
-            plot_obs_pred(y_te, yhat_gam_te, "GAM", OUTPUT_DIR, "obs_vs_pred_gam_fold1_test.png", TARGET_COL)
-            plot_obs_pred(y_te, yhat_geog_te, "GeoGAM", OUTPUT_DIR, "obs_vs_pred_geogam_fold1_test.png", TARGET_COL)
+    xs = df_imp["predictor"].map(x_map).values
+    ys = df_imp["health_metric"].map(y_map).values
+    vals = df_imp["delta_r2"].values
 
-            plot_residual_map(
-                fold_df[LON_COL], fold_df[LAT_COL], fold_df["resid_geogam"],
-                "Residuals map (GeoGAM) — TEST fold 1",
-                OUTPUT_DIR, "residuals_map_geogam_fold1_test.png"
-            )
+    # scale point sizes
+    vmax = np.nanmax(np.abs(vals)) if np.isfinite(vals).any() else 1.0
+    sizes = 40 + 700 * (np.abs(vals) / (vmax + 1e-12))
 
-            # RF feature importance (MDI)
-            if hasattr(rf, "feature_importances_"):
-                plot_rf_importance(
-                    FEATURE_COLS_RF,
-                    rf.feature_importances_,
-                    OUTPUT_DIR,
-                    "rf_feature_importance_fold1.png",
-                    "RF feature importance (MDI) — TRAIN fold 1"
-                )
+    plt.figure(figsize=(1.2 + 0.9 * len(predictors), 1.1 + 0.6 * len(healths)))
+    ax = plt.gca()
+    ax.scatter(xs, ys, s=sizes, alpha=POINT_ALPHA)
 
-            # Semivariograms (fold 1, TEST only)
-            if MAKE_VARIOGRAM_FOLD1:
-                # Note: coords_ll are lon/lat degrees. For a *paper*, consider reprojecting
-                # coords to a projected CRS (meters) prior to variogram calculation.
-                series = {
-                    "Residuals GAM (non-spatial)": resid_gam_te,
-                    "Residuals GeoGAM (spatial)": resid_geog_te,
-                    "Raw y (TEST)": y_te
-                }
-                plot_semivariograms(
-                    coords_xy=C_te,
-                    series_dict=series,
-                    out_dir=OUTPUT_DIR,
-                    fname="semivariogram_fold1_test.png",
-                    n_lags=VGRAM_N_LAGS,
-                    maxlag=VGRAM_MAXLAG
-                )
+    ax.set_xticks(range(len(predictors)))
+    ax.set_xticklabels(predictors, rotation=45, ha="right")
+    ax.set_yticks(range(len(healths)))
+    ax.set_yticklabels(healths)
 
-    # ---------- Save outputs ----------
-    # Predictions across folds
-    if all_preds:
-        preds = pd.concat(all_preds, ignore_index=True)
-        preds_csv = os.path.join(OUTPUT_DIR, "cv_predictions_residuals.csv")
-        preds.to_csv(preds_csv, index=False)
-        print(f"[OK] Saved predictions/residuals: {preds_csv}")
+    # annotate values (small)
+    for x, y, v in zip(xs, ys, vals):
+        ax.text(x, y, f"{v:.3f}", ha="center", va="center", fontsize=8)
 
-        # Export validation points to GPKG for QGIS
-        gdf_val = gpd.GeoDataFrame(
-            preds.copy(),
-            geometry=gpd.points_from_xy(preds[LON_COL], preds[LAT_COL]),
-            crs="EPSG:4326"
+    ax.set_title(title)
+    ax.set_xlabel("Predictor")
+    ax.set_ylabel("Health metric")
+    plt.tight_layout()
+    plt.savefig(outpath, dpi=FIG_DPI)
+    plt.close()
+
+def combined_overview(df_all: pd.DataFrame, outpath: Path):
+    """
+    One combined barplot per species (small multiples) showing mean ΔR² per predictor.
+    """
+    if df_all.empty:
+        return
+
+    species_order = list(dict.fromkeys(df_all["species"].tolist()))
+    preds = list(dict.fromkeys(df_all["predictor"].tolist()))
+
+    nsp = len(species_order)
+    fig_h = 2.2 + 1.6 * nsp
+    plt.figure(figsize=(8.5, fig_h))
+    ax = plt.gca()
+
+    y0 = 0
+    yticks = []
+    ylabels = []
+
+    for sp in species_order:
+        sub = df_all[df_all["species"] == sp]
+        agg = (sub.groupby("predictor", as_index=False)
+               .agg(delta=("delta_r2", "mean")))
+        # ensure all preds present
+        agg = agg.set_index("predictor").reindex(preds).fillna(0.0).reset_index()
+
+        # horizontal bars stacked by species blocks
+        ys = y0 + np.arange(len(preds))
+        ax.barh(ys, agg["delta"].values)
+        yticks.extend(list(ys))
+        ylabels.extend([f"{sp} · {p}" for p in agg["predictor"].tolist()])
+        y0 = ys.max() + 2  # gap between species blocks
+
+    ax.axvline(0, linestyle="--", linewidth=1)
+    ax.set_yticks(yticks)
+    ax.set_yticklabels(ylabels, fontsize=8)
+    ax.set_xlabel("Mean ΔR² (CV) when dropping predictor")
+    ax.set_title("GAM predictor importance across species (non-spatial)")
+    plt.tight_layout()
+    plt.savefig(outpath, dpi=FIG_DPI)
+    plt.close()
+
+
+# ----------------------------
+# MAIN
+# ----------------------------
+
+def main():
+    all_rows = []
+
+    for species, csv_path in SPECIES_CSVS.items():
+        print(f"\n=== {species} ===")
+        sp_out = OUT_ROOT / species
+        ensure_dir(sp_out)
+
+        df = pd.read_csv(csv_path)
+
+        required = HEALTH_VARS + PREDICTORS + CONTROL_VARS + EXTRA_CONTROLS
+        missing = [c for c in required if c not in df.columns]
+        if missing:
+            print(f"[skip] Missing columns in {species}: {missing}")
+            continue
+
+        df = make_numeric(df, required)
+
+        # filters applied broadly (per-variable masks; will shrink df)
+        df = apply_filters(df, required)
+
+        species_results = []
+        for health in HEALTH_VARS:
+            df_imp = fit_gam_cv_delta_r2(df, health, PREDICTORS, CONTROL_VARS)
+            if df_imp.empty:
+                print(f"[warn] {species}: no result for {health} (n too small?)")
+                continue
+            df_imp["species"] = species
+            species_results.append(df_imp)
+            all_rows.append(df_imp)
+
+        if not species_results:
+            print(f"[skip] {species}: no health metric produced results")
+            continue
+
+        sp_res = pd.concat(species_results, ignore_index=True)
+        sp_res.to_csv(sp_out / "gam_delta_r2_by_health_and_predictor.csv", index=False)
+
+        # Per-species figures
+        barplot_importance(
+            sp_res,
+            title=f"{species}: predictor importance (mean ΔR² across health metrics)",
+            outpath=sp_out / "gam_importance_barplot.png"
         )
-        gpkg_path = os.path.join(OUTPUT_DIR, "cv_validation_points.gpkg")
-        gdf_val.to_file(gpkg_path, layer="validation_points", driver="GPKG")
-        print(f"[OK] Saved validation points: {gpkg_path} (layer='validation_points')")
+        dotmatrix_importance(
+            sp_res,
+            title=f"{species}: ΔR² by health metric (dot-matrix)",
+            outpath=sp_out / "gam_importance_dotmatrix.png"
+        )
+
+        # Small "results table" subset (already small), but save a clean pivot too
+        pivot = sp_res.pivot_table(index="health_metric", columns="predictor", values="delta_r2", aggfunc="mean")
+        pivot.to_csv(sp_out / "gam_delta_r2_pivot.csv")
+
+        print(f"[ok] saved: {sp_out}")
+
+    # Combined overview across species
+    if all_rows:
+        all_df = pd.concat(all_rows, ignore_index=True)
+        all_df.to_csv(OUT_ROOT / "ALL_species_gam_delta_r2_long.csv", index=False)
+        combined_overview(all_df, OUT_ROOT / "ALL_species_gam_importance_overview.png")
+        print(f"\n[ok] multi-species outputs in: {OUT_ROOT}")
     else:
-        print("[WARN] No fold predictions generated.")
-
-    # Fold metrics
-    dfm = pd.DataFrame(fold_metrics)
-    metrics_csv = os.path.join(OUTPUT_DIR, "cv_fold_metrics.csv")
-    dfm.to_csv(metrics_csv, index=False)
-    print(f"[OK] Saved fold metrics: {metrics_csv}")
-
-    # Summary
-    summary_path = os.path.join(OUTPUT_DIR, "cv_summary.txt")
-    with open(summary_path, "w") as f:
-        f.write(f"K-fold CV (K={N_FOLDS})\n")
-        f.write(f"CV type: {'SPATIAL' if USE_SPATIAL_CV else 'RANDOM'}\n\n")
-        f.write(f"Target: {TARGET_COL}\n")
-        f.write(f"RF features: {FEATURE_COLS_RF}\n")
-        f.write(f"GAM columns: height={HEIGHT_COL}, impervious={IMP_COL}, temp={TEMP_COL}, poll={POLL_COLS}\n")
-        f.write(f"Spatial smooth: te(lon,lat) with k={K_SPATIAL}\n")
-        f.write(f"Samples: {len(df)}\n\n")
-
-        def mean_std(col):
-            return float(dfm[col].mean()), float(dfm[col].std())
-
-        for model in ["rf", "gam", "geogam"]:
-            r2m, r2s = mean_std(f"{model}_r2_test")
-            maem, maes = mean_std(f"{model}_mae_test")
-            mim, mis = mean_std(f"{model}_moranI_test")
-            f.write(
-                f"{model.upper()} TEST: "
-                f"R2={r2m:.4f}±{r2s:.4f}, "
-                f"MAE={maem:.4f}±{maes:.4f}, "
-                f"Moran's I={mim:.4f}±{mis:.4f}\n"
-            )
-
-        if "gam_lam_mean" in dfm.columns:
-            f.write("\nLambda (penalty) summaries:\n")
-            f.write(f"  GAM lam mean (across folds):    {dfm['gam_lam_mean'].mean():.6f}\n")
-            f.write(f"  GeoGAM lam mean (across folds): {dfm['geogam_lam_mean'].mean():.6f}\n")
-            if len(dfm) > 0:
-                f.write(f"  Example GAM lam (fold 1):       {dfm['gam_lam_str'].iloc[0]}\n")
-                f.write(f"  Example GeoGAM lam (fold 1):    {dfm['geogam_lam_str'].iloc[0]}\n")
-
-    print(f"[OK] Summary written: {summary_path}")
-    print("[Done] RF vs GAM vs GeoGAM CV complete.")
+        print("\n[warn] No species produced outputs (check missing columns / MIN_N).")
 
 
 if __name__ == "__main__":
-    # silence some benign pygam warnings in CV loops
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        main()
+    main()

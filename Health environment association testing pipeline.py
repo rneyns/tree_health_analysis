@@ -11,7 +11,7 @@ from statsmodels.stats.multitest import multipletests  # for optional FDR correc
 # USER SETTINGS
 # ----------------------------
 
-DATA_PATH = "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/acer platanoides/ndvi_metrics_with_impervious.csv"
+DATA_PATH = "/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/aesculus hippocastanum/ndvi_metrics_with_impervious.csv"
 
 health_vars = [
     "ndvi_peak",
@@ -37,19 +37,68 @@ env_vars = [
     "poll_no2_anmean",
     "poll_bc_anmean",
     "poll_pm25_anmean",
+    "poll_pm10_anmean",
     "lst_temp_r100_y",
     "lst_temp_r50_y",
-    "height",
     "insolation9",
 ]
 
 CONTROL_VAR = "height"
 
+RENAME_MAP = {
+    # Health metrics
+    "ndvi_peak": "NDVI peak",
+    "ndvi_base": "NDVI base",
+    "greenup_doy": "Green-up DOY",
+    "sos_doy": "SOS (DOY)",
+    "peak_doy": "POS (DOY)",
+    "sen_onset_doy": "Senescence onset (DOY)",
+    "eos_doy": "EOS (DOY)",
+    "dormancy_doy": "Dormancy (DOY)",
+    "los_days": "LOS (days)",
+    "amplitude": "Amplitude (peak–base)",
+    "slope_sos_peak": "Green-up rate",
+    "senescence_rate": "Senescence rate",
+    "auc_above_base_full": "AUC above base",
+
+    # Environmental
+    "imperv_10m": "Impervious (10 m)",
+    "imperv_20m": "Impervious (20 m)",
+    "imperv_50m": "Impervious (50 m)",
+    "imperv_100m": "Impervious (100 m)",
+    "poll_no2_anmean": "NO₂ (annual mean)",
+    "poll_bc_anmean": "Black carbon (annual mean)",
+    "poll_pm25_anmean": "PM₂.₅ (annual mean)",
+    "poll_pm10_anmean": "PM₁₀ (annual mean)",
+    "lst_temp_r50_y": "LST (50 m)",
+    "lst_temp_r100_y": "LST (100 m)",
+    "insolation9": "Insolation",
+
+    # Control
+    "height": "Tree height",
+}
+
+health_vars_results = [
+    "ndvi_peak",
+    "sos_doy",
+    "los_days",
+    "amplitude",
+    "auc_above_base_full",
+]
+
+env_vars_results = [
+    "imperv_10m",
+    "poll_bc_anmean",
+    "lst_temp_r50_y",
+    "insolation9",
+]
+
+
 # Cleaning
 DROP_POLLUTION_NEGATIVE = True  # remove any rows where any poll_* < 0
 
 # Outputs
-OUTDIR = Path("/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/acer platanoides/corr_outputs")
+OUTDIR = Path("/Users/robbe_neyns/Documents/Work_local/research/UHI tree health/Data analysis/ndvi background investigations/aesculus hippocastanum/corr_outputs")
 OUTDIR.mkdir(exist_ok=True)
 SCATTER_DIR_ALL = OUTDIR / "scatterplots_all_pairs"
 SCATTER_DIR_ALL.mkdir(exist_ok=True)
@@ -129,6 +178,13 @@ def zscore_df(df_in: pd.DataFrame, cols: list[str], eps: float = 1e-12) -> pd.Da
     return df_out
 
 df = zscore_df(df, all_vars)
+
+def rename_vars_in_matrix(mat: pd.DataFrame, rename_map: dict) -> pd.DataFrame:
+    mat2 = mat.copy()
+    mat2.index = [rename_map.get(x, x) for x in mat2.index]
+    mat2.columns = [rename_map.get(x, x) for x in mat2.columns]
+    return mat2
+
 
 
 # ----------------------------
@@ -239,16 +295,31 @@ def compute_partial_spearman_matrix_with_p(df_in: pd.DataFrame, vars_a: list[str
 
     return rho, pval, nmat
 
-
-def plot_corr_heatmap(mat: pd.DataFrame, pmat: pd.DataFrame | None, title: str, outfile: Path, vlim: float = 1.0):
+def plot_corr_heatmap(
+    mat: pd.DataFrame,
+    pmat: pd.DataFrame | None,
+    title: str,
+    outfile: Path,
+    vlim: float = 1.0,
+    cell_fontsize: int = 7,
+    tick_fontsize: int = 9,
+    title_fontsize: int = 11,
+    show_stars: bool = True,
+    show_values: bool = True,
+    rotation: int = 35,
+):
     """
     Heatmap with optional significance stars based on pmat.
-    If MASK_NON_SIGNIFICANT is True, cells with p >= ALPHA_SIG are masked (set to NaN).
-    If APPLY_FDR_BH is True, p-values are adjusted per-matrix before stars/masking.
+    - If MASK_NON_SIGNIFICANT is True, cells with p >= ALPHA_SIG are masked (set to NaN).
+    - If APPLY_FDR_BH is True, p-values are adjusted per-matrix before stars/masking.
+    - show_stars: whether to append *, **, *** to cell labels (if pmat is provided)
+    - show_values: whether to print numeric rho values in cells
     """
+
     mat_plot = mat.copy()
     p_use = None
 
+    # --- handle p-values (optional) ---
     if pmat is not None:
         p_use = pmat.copy()
         if APPLY_FDR_BH:
@@ -257,38 +328,63 @@ def plot_corr_heatmap(mat: pd.DataFrame, pmat: pd.DataFrame | None, title: str, 
         if MASK_NON_SIGNIFICANT:
             mat_plot = mat_plot.where(p_use < ALPHA_SIG)
 
+    # --- plotting array ---
     arr = mat_plot.values.astype(float)
 
-    fig, ax = plt.subplots(
-        figsize=(1 + 0.55 * mat_plot.shape[1], 1 + 0.45 * mat_plot.shape[0]),
-        constrained_layout=True
-    )
+    # --- dynamic sizing: bigger for small matrices, not exploding for larger ones ---
+    nrows, ncols = mat_plot.shape
+    fig_w = max(5.0, min(14.0, 1.6 + 0.75 * ncols))
+    fig_h = max(4.0, min(12.0, 1.4 + 0.60 * nrows))
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), constrained_layout=True)
+
     im = ax.imshow(arr, vmin=-vlim, vmax=vlim, aspect="auto")
-    ax.set_title(title)
 
-    ax.set_xticks(range(mat_plot.shape[1]))
-    ax.set_xticklabels(mat_plot.columns, rotation=45, ha="right")
-    ax.set_yticks(range(mat_plot.shape[0]))
-    ax.set_yticklabels(mat_plot.index)
+    ax.set_title(title, fontsize=title_fontsize)
 
-    # cell labels
-    for i in range(mat_plot.shape[0]):
-        for j in range(mat_plot.shape[1]):
-            r = arr[i, j]
-            if not np.isfinite(r):
-                continue
+    # ticks + tick labels
+    ax.set_xticks(range(ncols))
+    ax.set_xticklabels(mat_plot.columns, rotation=rotation, ha="right", fontsize=tick_fontsize)
+    ax.set_yticks(range(nrows))
+    ax.set_yticklabels(mat_plot.index, fontsize=tick_fontsize)
 
-            stars = ""
-            if ANNOTATE_SIGNIFICANCE and (p_use is not None):
-                p = float(p_use.values[i, j])
-                stars = p_to_stars(p)
+    # minor gridlines to help readability
+    ax.set_xticks(np.arange(-0.5, ncols, 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, nrows, 1), minor=True)
+    ax.grid(which="minor", linestyle="-", linewidth=0.5, alpha=0.25)
+    ax.tick_params(which="minor", bottom=False, left=False)
 
-            ax.text(j, i, f"{r:.2f}{stars}", ha="center", va="center", fontsize=7)
+    # --- cell annotations ---
+    if show_values or (show_stars and ANNOTATE_SIGNIFICANCE):
+        for i in range(nrows):
+            for j in range(ncols):
+                r = arr[i, j]
+                if not np.isfinite(r):
+                    continue
+
+                stars = ""
+                if show_stars and ANNOTATE_SIGNIFICANCE and (p_use is not None):
+                    p = float(p_use.values[i, j])
+                    stars = p_to_stars(p)
+
+                if show_values:
+                    label = f"{r:.2f}"
+                    if show_stars and stars:
+                        label += stars
+                else:
+                    # no numeric values, only stars (if any)
+                    label = stars
+
+                if label:
+                    ax.text(j, i, label, ha="center", va="center", fontsize=cell_fontsize)
 
     cbar = fig.colorbar(im, ax=ax, shrink=0.9)
-    cbar.set_label("Spearman ρ (signed)")
+    cbar.ax.tick_params(labelsize=tick_fontsize)
+    cbar.set_label("Spearman ρ (signed)", fontsize=tick_fontsize)
+
     plt.savefig(outfile, dpi=FIG_DPI)
     plt.close()
+
 
 
 def upper_triangle_pairs(mat_square: pd.DataFrame) -> pd.DataFrame:
@@ -377,57 +473,88 @@ print("Computing correlation matrices...")
 
 # Health vs Environment (RAW)
 raw_hxe, raw_hxe_p, raw_hxe_n = compute_spearman_matrix_with_p(df, health_vars, env_vars)
-raw_hxe.to_csv(OUTDIR / "corr_spearman_signed_health_vs_env.csv")
-raw_hxe_p.to_csv(OUTDIR / "pvals_spearman_health_vs_env.csv")
-raw_hxe_n.to_csv(OUTDIR / "n_spearman_health_vs_env.csv")
-plot_corr_heatmap(raw_hxe, raw_hxe_p, "Signed Spearman (health vs env) — raw", OUTDIR / "heatmap_raw_health_vs_env.png", vlim=HEATMAP_VLIM)
+
+raw_hxe_named   = rename_vars_in_matrix(raw_hxe, RENAME_MAP)
+raw_hxe_p_named = rename_vars_in_matrix(raw_hxe_p, RENAME_MAP)
+raw_hxe_n_named = rename_vars_in_matrix(raw_hxe_n, RENAME_MAP)
+
+raw_hxe_named.to_csv(OUTDIR / "corr_spearman_signed_health_vs_env.csv")
+raw_hxe_p_named.to_csv(OUTDIR / "pvals_spearman_health_vs_env.csv")
+raw_hxe_n_named.to_csv(OUTDIR / "n_spearman_health_vs_env.csv")
+plot_corr_heatmap(raw_hxe_named, raw_hxe_p_named, "Signed Spearman (health vs env) — raw", OUTDIR / "heatmap_raw_health_vs_env.png", vlim=HEATMAP_VLIM)
 
 # Health vs Environment (PARTIAL)
 par_hxe, par_hxe_p, par_hxe_n = compute_partial_spearman_matrix_with_p(df, health_vars, env_vars, CONTROL_VAR)
-par_hxe.to_csv(OUTDIR / f"corr_partial_spearman_signed_health_vs_env_control_{CONTROL_VAR}.csv")
-par_hxe_p.to_csv(OUTDIR / f"pvals_partial_spearman_health_vs_env_control_{CONTROL_VAR}.csv")
-par_hxe_n.to_csv(OUTDIR / f"n_partial_spearman_health_vs_env_control_{CONTROL_VAR}.csv")
-plot_corr_heatmap(par_hxe, par_hxe_p, f"Signed partial Spearman (health vs env) — control {CONTROL_VAR}", OUTDIR / f"heatmap_partial_health_vs_env_control_{CONTROL_VAR}.png", vlim=HEATMAP_VLIM)
+
+par_hxe_named   = rename_vars_in_matrix(par_hxe, RENAME_MAP)
+par_hxe_p_named = rename_vars_in_matrix(par_hxe_p, RENAME_MAP)
+par_hxe_n_named = rename_vars_in_matrix(par_hxe_n, RENAME_MAP)
+
+par_hxe_named.to_csv(OUTDIR / f"corr_partial_spearman_signed_health_vs_env_control_{CONTROL_VAR}.csv")
+par_hxe_p_named.to_csv(OUTDIR / f"pvals_partial_spearman_health_vs_env_control_{CONTROL_VAR}.csv")
+par_hxe_n_named.to_csv(OUTDIR / f"n_partial_spearman_health_vs_env_control_{CONTROL_VAR}.csv")
+plot_corr_heatmap(par_hxe_named, par_hxe_p_named, f"Signed partial Spearman (health vs env) — control {CONTROL_VAR}", OUTDIR / f"heatmap_partial_health_vs_env_control_{CONTROL_VAR}.png", vlim=HEATMAP_VLIM)
 
 # Env vs Env (RAW)
 raw_env, raw_env_p, raw_env_n = compute_spearman_matrix_with_p(df, env_vars, env_vars)
-np.fill_diagonal(raw_env.values, np.nan)
-np.fill_diagonal(raw_env_p.values, np.nan)
-np.fill_diagonal(raw_env_n.values, np.nan)
-raw_env.to_csv(OUTDIR / "corr_spearman_signed_env_vs_env.csv")
-raw_env_p.to_csv(OUTDIR / "pvals_spearman_env_vs_env.csv")
-raw_env_n.to_csv(OUTDIR / "n_spearman_env_vs_env.csv")
-plot_corr_heatmap(raw_env, raw_env_p, "Signed Spearman (env vs env) — raw", OUTDIR / "heatmap_raw_env_vs_env.png", vlim=HEATMAP_VLIM)
+
+raw_env_named   = rename_vars_in_matrix(raw_env, RENAME_MAP)
+raw_env_p_named = rename_vars_in_matrix(raw_env_p, RENAME_MAP)
+raw_env_n_named = rename_vars_in_matrix(raw_env_n, RENAME_MAP)
+
+np.fill_diagonal(raw_env_named.values, np.nan)
+np.fill_diagonal(raw_env_p_named.values, np.nan)
+np.fill_diagonal(raw_env_n_named.values, np.nan)
+raw_env_named.to_csv(OUTDIR / "corr_spearman_signed_env_vs_env.csv")
+raw_env_p_named.to_csv(OUTDIR / "pvals_spearman_env_vs_env.csv")
+raw_env_n_named.to_csv(OUTDIR / "n_spearman_env_vs_env.csv")
+plot_corr_heatmap(raw_env_named, raw_env_p_named, "Signed Spearman (env vs env) — raw", OUTDIR / "heatmap_raw_env_vs_env.png", vlim=HEATMAP_VLIM)
 
 # Env vs Env (PARTIAL)
 par_env, par_env_p, par_env_n = compute_partial_spearman_matrix_with_p(df, env_vars, env_vars, CONTROL_VAR)
-np.fill_diagonal(par_env.values, np.nan)
-np.fill_diagonal(par_env_p.values, np.nan)
-np.fill_diagonal(par_env_n.values, np.nan)
-par_env.to_csv(OUTDIR / f"corr_partial_spearman_signed_env_vs_env_control_{CONTROL_VAR}.csv")
-par_env_p.to_csv(OUTDIR / f"pvals_partial_spearman_env_vs_env_control_{CONTROL_VAR}.csv")
-par_env_n.to_csv(OUTDIR / f"n_partial_spearman_env_vs_env_control_{CONTROL_VAR}.csv")
-plot_corr_heatmap(par_env, par_env_p, f"Signed partial Spearman (env vs env) — control {CONTROL_VAR}", OUTDIR / f"heatmap_partial_env_vs_env_control_{CONTROL_VAR}.png", vlim=HEATMAP_VLIM)
+
+par_env_named   = rename_vars_in_matrix(par_env, RENAME_MAP)
+par_env_p_named = rename_vars_in_matrix(par_env_p, RENAME_MAP)
+par_env_n_named = rename_vars_in_matrix(par_env_n, RENAME_MAP)
+
+np.fill_diagonal(par_env_named.values, np.nan)
+np.fill_diagonal(par_env_p_named.values, np.nan)
+np.fill_diagonal(par_env_n_named.values, np.nan)
+
+par_env_named.to_csv(OUTDIR / f"corr_partial_spearman_signed_env_vs_env_control_{CONTROL_VAR}.csv")
+par_env_p_named.to_csv(OUTDIR / f"pvals_partial_spearman_env_vs_env_control_{CONTROL_VAR}.csv")
+par_env_n_named.to_csv(OUTDIR / f"n_partial_spearman_env_vs_env_control_{CONTROL_VAR}.csv")
+plot_corr_heatmap(par_env_named, par_env_p_named, f"Signed partial Spearman (env vs env) — control {CONTROL_VAR}", OUTDIR / f"heatmap_partial_env_vs_env_control_{CONTROL_VAR}.png", vlim=HEATMAP_VLIM)
 
 # Health vs Health (RAW)
 raw_health, raw_health_p, raw_health_n = compute_spearman_matrix_with_p(df, health_vars, health_vars)
-np.fill_diagonal(raw_health.values, np.nan)
-np.fill_diagonal(raw_health_p.values, np.nan)
-np.fill_diagonal(raw_health_n.values, np.nan)
-raw_health.to_csv(OUTDIR / "corr_spearman_signed_health_vs_health.csv")
-raw_health_p.to_csv(OUTDIR / "pvals_spearman_health_vs_health.csv")
-raw_health_n.to_csv(OUTDIR / "n_spearman_health_vs_health.csv")
-plot_corr_heatmap(raw_health, raw_health_p, "Signed Spearman (health vs health) — raw", OUTDIR / "heatmap_raw_health_vs_health.png", vlim=HEATMAP_VLIM)
+
+raw_health_named   = rename_vars_in_matrix(raw_health, RENAME_MAP)
+raw_health_p_named = rename_vars_in_matrix(raw_health_p, RENAME_MAP)
+raw_health_n_named = rename_vars_in_matrix(raw_health_n, RENAME_MAP)
+
+np.fill_diagonal(raw_health_named.values, np.nan)
+np.fill_diagonal(raw_health_p_named.values, np.nan)
+np.fill_diagonal(raw_health_n_named.values, np.nan)
+raw_health_named.to_csv(OUTDIR / "corr_spearman_signed_health_vs_health.csv")
+raw_health_p_named.to_csv(OUTDIR / "pvals_spearman_health_vs_health.csv")
+raw_health_n_named.to_csv(OUTDIR / "n_spearman_health_vs_health.csv")
+plot_corr_heatmap(raw_health_named, raw_health_p_named, "Signed Spearman (health vs health) — raw", OUTDIR / "heatmap_raw_health_vs_health.png", vlim=HEATMAP_VLIM)
 
 # Health vs Health (PARTIAL)
 par_health, par_health_p, par_health_n = compute_partial_spearman_matrix_with_p(df, health_vars, health_vars, CONTROL_VAR)
-np.fill_diagonal(par_health.values, np.nan)
-np.fill_diagonal(par_health_p.values, np.nan)
-np.fill_diagonal(par_health_n.values, np.nan)
-par_health.to_csv(OUTDIR / f"corr_partial_spearman_signed_health_vs_health_control_{CONTROL_VAR}.csv")
-par_health_p.to_csv(OUTDIR / f"pvals_partial_spearman_health_vs_health_control_{CONTROL_VAR}.csv")
-par_health_n.to_csv(OUTDIR / f"n_partial_spearman_health_vs_health_control_{CONTROL_VAR}.csv")
-plot_corr_heatmap(par_health, par_health_p, f"Signed partial Spearman (health vs health) — control {CONTROL_VAR}", OUTDIR / f"heatmap_partial_health_vs_health_control_{CONTROL_VAR}.png", vlim=HEATMAP_VLIM)
+
+par_health_named   = rename_vars_in_matrix(par_health, RENAME_MAP)
+par_health_p_named = rename_vars_in_matrix(par_health_p, RENAME_MAP)
+par_health_n_named = rename_vars_in_matrix(par_health_n, RENAME_MAP)
+
+np.fill_diagonal(par_health_named.values, np.nan)
+np.fill_diagonal(par_health_p_named.values, np.nan)
+np.fill_diagonal(par_health_n_named.values, np.nan)
+par_health_named.to_csv(OUTDIR / f"corr_partial_spearman_signed_health_vs_health_control_{CONTROL_VAR}.csv")
+par_health_p_named.to_csv(OUTDIR / f"pvals_partial_spearman_health_vs_health_control_{CONTROL_VAR}.csv")
+par_health_n_named.to_csv(OUTDIR / f"n_partial_spearman_health_vs_health_control_{CONTROL_VAR}.csv")
+plot_corr_heatmap(par_health_named, par_health_p_named, f"Signed partial Spearman (health vs health) — control {CONTROL_VAR}", OUTDIR / f"heatmap_partial_health_vs_health_control_{CONTROL_VAR}.png", vlim=HEATMAP_VLIM)
 
 print("Correlation matrices saved to:", OUTDIR.resolve())
 
@@ -481,3 +608,36 @@ if MAKE_TOP_PAIR_PLOTS:
         scatter_pair(df, v1, v2, out, title=f"HEALTH (partial control {CONTROL_VAR}) #{k+1}: {v2} vs {v1}")
 
 print("Done.")
+
+#------------------------
+# 4) heatmap for results section (limited number of vars
+#------------------------
+
+# RESULTS MATRIX (PARTIAL, height-controlled)
+res_hxe, res_hxe_p, res_hxe_n = compute_partial_spearman_matrix_with_p(
+    df, health_vars_results, env_vars_results, CONTROL_VAR
+)
+
+res_hxe_named   = rename_vars_in_matrix(res_hxe, RENAME_MAP)
+res_hxe_p_named = rename_vars_in_matrix(res_hxe_p, RENAME_MAP)
+res_hxe_n_named = rename_vars_in_matrix(res_hxe_n, RENAME_MAP)
+
+res_hxe_named.to_csv(OUTDIR / f"RESULTS_corr_partial_spearman_health_vs_env_control_{CONTROL_VAR}.csv")
+res_hxe_p_named.to_csv(OUTDIR / f"RESULTS_pvals_partial_spearman_health_vs_env_control_{CONTROL_VAR}.csv")
+res_hxe_n_named.to_csv(OUTDIR / f"RESULTS_n_partial_spearman_health_vs_env_control_{CONTROL_VAR}.csv")
+
+MASK_NON_SIGNIFICANT = True
+APPLY_FDR_BH = True
+
+plot_corr_heatmap(
+    res_hxe_named, res_hxe_p_named,
+    "Partial Spearman (height-controlled)",
+    OUTDIR / "RESULTS_heatmap.png",
+    cell_fontsize=10,
+    tick_fontsize=10,
+    title_fontsize=12,
+    show_stars=False,   # <- avoids clutter
+    show_values=True
+)
+
+
