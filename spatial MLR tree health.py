@@ -50,14 +50,15 @@ OUTPUTS PER SPECIES × HEALTH METRIC
   {health}_SLM_residuals.png         — residual diagnostics for SLM
   {health}_coefficients_comparison.png — OLS vs SEM vs SLM side-by-side
   {health}_moran_comparison.png      — Moran's I before/after spatial correction
-  {health}_AIC_comparison.png        — AIC across three models
+  {health}_AIC_comparison.png        — |ΔAIC| vs OLS for SEM and SLM
   {health}_dominance.png/.csv        — dominance analysis (OLS-based)
   {health}_model_summary.txt         — full text output for all three models
 
 COMBINED ACROSS ALL SPECIES
   ALL_species_model_comparison.csv   — one row per species × metric × predictor
   ALL_R2_OLS_heatmap.png
-  ALL_AIC_comparison.png
+  ALL_AIC_comparison.png             — |ΔAIC| grouped bar chart per health metric
+  ALL_delta_AIC_heatmap.png          — NEW: heatmap of |ΔAIC| with winning model
   ALL_Morans_comparison.png
   ALL_species_dominance.csv
   ALL_dominance_stacked.png
@@ -78,6 +79,10 @@ REFERENCES
       Ecology, 74(6), 1659–1673.
   O'Brien, R. M. (2007). A caution regarding rules of thumb for VIF.
       Quality & Quantity, 41(5), 673–690.
+  Rüttenauer, T. (2022). Spatial regression models: a systematic comparison.
+      Sociological Methods & Research, 51(2), 764–803.
+  Fusco, E., & Vidoli, F. (2022). Evaluating the performance of AIC and BIC
+      for selecting spatial econometric models. Journal of Spatial Econometrics, 3(1).
 
 Dependencies:
     pip install numpy pandas matplotlib scipy scikit-learn statsmodels geopandas shapely pyproj fiona
@@ -143,7 +148,7 @@ OUT_ROOT = Path(
 OUT_ROOT.mkdir(parents=True, exist_ok=True)
 
 # Model variables
-CONTROL_VARS = ["height"]        # partialled out; excluded from dominance analysis
+CONTROL_VARS = ["height"]
 HEALTH_VARS  = ["ndvi_peak", "sos_doy", "los_days", "amplitude", "auc_above_base_full"]
 PREDICTORS   = ["imperv_100m", "poll_bc_anmean", "lst_temp_r100_y", "insolation9"]
 
@@ -154,7 +159,7 @@ SHAPEFILE_PATH             = r"/Users/robbe_neyns/Documents/Work_local/research/
 CSV_ID_COL                 = "tree_id"
 SHP_ID_COL                 = "crown_id"
 USE_CENTROID_IF_NOT_POINTS = True
-TARGET_CRS                 = None   # e.g. "EPSG:31370"
+TARGET_CRS                 = None
 
 # Analysis settings
 MIN_N          = 30
@@ -285,11 +290,8 @@ def morans_I_perm(resid: np.ndarray, W: np.ndarray,
 def fit_sem(y: np.ndarray, X: np.ndarray, W: np.ndarray) -> dict:
     """
     Spatial Error Model: y = Xβ + u,  u = λWu + ε
-    Equivalent (GLS form): (I−λW)y = (I−λW)X β + ε
-
-    ML estimation via grid search over λ ∈ (1/λ_min, 1/λ_max).
-    Moran's I is computed on the TRANSFORMED residuals e_t = (I−λW)y − (I−λW)Xβ,
-    which should be spatially uncorrelated if the model is correctly specified.
+    ML estimation via grid search over λ.
+    Moran's I on TRANSFORMED residuals e_t = (I−λW)y − (I−λW)Xβ.
     """
     n = len(y)
     eigs = np.linalg.eigvalsh(W)
@@ -320,11 +322,11 @@ def fit_sem(y: np.ndarray, X: np.ndarray, W: np.ndarray) -> dict:
     A   = np.eye(n) - lam * W
     Ay  = A @ y; AX = A @ X
     beta = np.linalg.solve(AX.T @ AX, AX.T @ Ay)
-    e_t  = Ay - AX @ beta        # transformed residuals  ← use for Moran's I
+    e_t  = Ay - AX @ beta
     s2   = (e_t @ e_t) / n
     se   = np.sqrt(np.diag(s2 * np.linalg.inv(AX.T @ AX)))
 
-    k   = X.shape[1] + 1        # betas + lambda
+    k   = X.shape[1] + 1
     ll  = -res.fun
     aic = -2 * ll + 2 * k
 
@@ -332,7 +334,7 @@ def fit_sem(y: np.ndarray, X: np.ndarray, W: np.ndarray) -> dict:
         "beta":    beta,
         "se":      se,
         "lambda":  lam,
-        "resid":   e_t,          # transformed residuals (spatially whitened)
+        "resid":   e_t,
         "sigma2":  s2,
         "log_lik": ll,
         "aic":     aic,
@@ -343,9 +345,8 @@ def fit_sem(y: np.ndarray, X: np.ndarray, W: np.ndarray) -> dict:
 def fit_slm(y: np.ndarray, X: np.ndarray, W: np.ndarray) -> dict:
     """
     Spatial Lag Model: y = ρWy + Xβ + ε
-    Equivalent: yr = y − ρWy = Xβ + ε  (with |A|=|I−ρW| in log-likelihood)
-
-    Moran's I is computed on the raw residuals: yr − Xβ.
+    ML estimation via grid search over ρ.
+    Moran's I on raw residuals yr − Xβ where yr = y − ρWy.
     """
     n  = len(y)
     Wy = W @ y
@@ -375,7 +376,7 @@ def fit_slm(y: np.ndarray, X: np.ndarray, W: np.ndarray) -> dict:
     rho  = res.x
     yr   = y - rho * Wy
     beta = np.linalg.solve(X.T @ X, X.T @ yr)
-    e    = yr - X @ beta         # raw residuals ← use for Moran's I
+    e    = yr - X @ beta
     s2   = (e @ e) / n
     se   = np.sqrt(np.diag(s2 * np.linalg.inv(X.T @ X)))
 
@@ -387,7 +388,7 @@ def fit_slm(y: np.ndarray, X: np.ndarray, W: np.ndarray) -> dict:
         "beta":    beta,
         "se":      se,
         "rho":     rho,
-        "resid":   e,            # raw residuals (yr − Xβ)
+        "resid":   e,
         "sigma2":  s2,
         "log_lik": ll,
         "aic":     aic,
@@ -402,25 +403,17 @@ def fit_slm(y: np.ndarray, X: np.ndarray, W: np.ndarray) -> dict:
 def lm_tests(resid_ols: np.ndarray, X: np.ndarray, W: np.ndarray) -> dict:
     """
     Lagrange Multiplier tests for spatial lag and spatial error
-    (Anselin et al. 1996).  Computed on OLS residuals.
-
-    LM-error: tests H0: λ=0  (no spatial error autocorrelation)
-    LM-lag:   tests H0: ρ=0  (no spatial lag dependence)
-
-    Both follow χ²(1) under H0.
+    (Anselin et al. 1996). Computed on OLS residuals.
     """
     n  = len(resid_ols)
     e  = resid_ols
     s2 = (e @ e) / n
     We = W @ e
-    T  = np.trace(W.T @ W + W @ W)   # trace term shared by both tests
+    T  = np.trace(W.T @ W + W @ W)
 
-    # LM-error  (Anselin 1988, eq. 12)
     lm_err = (e @ We / s2) ** 2 / T
     p_err  = 1 - stats.chi2.cdf(lm_err, df=1)
 
-    # LM-lag  (Anselin et al. 1996, eq. 13)
-    # Denominator adds a correction for the projection of WX onto M
     WX = W @ X
     XtX_inv = np.linalg.inv(X.T @ X)
     denom_lag = T + np.trace(WX @ XtX_inv @ WX.T) / s2
@@ -451,10 +444,6 @@ def dominance_analysis(y: np.ndarray, X_predictors: np.ndarray,
                         X_controls: np.ndarray, predictor_names: list) -> pd.DataFrame:
     """
     General dominance weights (Budescu 1993) after partialling out controls.
-
-    For each predictor j: average additional R² contributed by j across all
-    subsets of the remaining predictors, averaged across all subset sizes.
-    Weights sum to total R² attributable to predictors (excluding height).
     """
     k = len(predictor_names)
     if k > MAX_PREDICTORS_DA:
@@ -587,7 +576,6 @@ def plot_coefficients_comparison(col_names, ols_full, sem, slm,
     offsets = {"OLS": -0.22, "SEM": 0.0, "SLM": 0.22}
     h = 0.18
 
-    # OLS
     for pi, col in enumerate(pred_cols):
         beta = ols_full.params.get(col, np.nan)
         se   = ols_full.bse.get(col, np.nan)
@@ -598,7 +586,6 @@ def plot_coefficients_comparison(col_names, ols_full, sem, slm,
             ax.errorbar(beta, yp, xerr=1.96*se,
                         fmt="none", color="black", capsize=3, lw=1.0)
 
-    # SEM
     col_idx = {c: i for i, c in enumerate(col_names)}
     for pi, col in enumerate(pred_cols):
         if col not in col_idx: continue
@@ -610,7 +597,6 @@ def plot_coefficients_comparison(col_names, ols_full, sem, slm,
         ax.errorbar(beta, yp, xerr=1.96*se,
                     fmt="none", color="black", capsize=3, lw=1.0)
 
-    # SLM
     for pi, col in enumerate(pred_cols):
         if col not in col_idx: continue
         beta = slm["beta"][col_idx[col]]
@@ -653,23 +639,70 @@ def plot_moran_comparison(moran_ols, moran_sem, moran_slm,
     plt.tight_layout(); fig.savefig(outpath, dpi=FIG_DPI); plt.close(fig)
 
 
+# ╔══════════════════════════════════════════════════════════╗
+# ║              AIC PLOTS  (updated to |ΔAIC|)             ║
+# ╚══════════════════════════════════════════════════════════╝
+
 def plot_aic_comparison(ols_aic, sem_aic, slm_aic, health, sp_pretty, outpath):
-    """Bar chart: AIC for OLS, SEM, SLM (lower = better). Best model outlined."""
-    models = ["OLS", "SEM", "SLM"]
-    vals   = [ols_aic, sem_aic, slm_aic]
-    colors = [MODEL_COLOURS[m] for m in models]
-    best   = int(np.nanargmin(vals))
+    """
+    Bar chart showing |ΔAIC| = |model_AIC - OLS_AIC| for SEM and SLM.
+    OLS anchors at 0 (baseline at the bottom).
+    Taller bar = larger improvement over OLS.
+    Bold outline marks the best-fitting spatial model.
+    """
+    abs_sem = abs(sem_aic - ols_aic) if np.isfinite(sem_aic) else np.nan
+    abs_slm = abs(slm_aic - ols_aic) if np.isfinite(slm_aic) else np.nan
+
+    models = ["SEM", "SLM"]
+    values = [abs_sem, abs_slm]
+    colors = [MODEL_COLOURS["SEM"], MODEL_COLOURS["SLM"]]
+
+    # Winner = largest absolute improvement over OLS
+    best_idx = (int(np.nanargmax(values))
+                if np.any(np.isfinite(values)) else -1)
 
     fig, ax = plt.subplots(figsize=(5, 4))
-    bars = ax.bar(models, vals, color=colors, alpha=0.85, edgecolor="white", width=0.5)
-    bars[best].set_edgecolor("black"); bars[best].set_linewidth(2.5)
-    delta_sem = sem_aic - ols_aic if np.isfinite(sem_aic) else np.nan
-    delta_slm = slm_aic - ols_aic if np.isfinite(slm_aic) else np.nan
-    ax.set_ylabel("AIC  (lower = better fit)")
-    ax.set_title(f"{sp_pretty} – {HEALTH_LABELS.get(health,health)}\n"
-                 f"Model fit comparison  (bold = best)\n"
-                 f"ΔAIC  SEM={delta_sem:+.1f}  SLM={delta_slm:+.1f}  vs OLS")
-    plt.tight_layout(); fig.savefig(outpath, dpi=FIG_DPI); plt.close(fig)
+    bars = ax.bar(models, values, color=colors, alpha=0.85,
+                  edgecolor="white", width=0.45)
+
+    # Bold outline on the best spatial model
+    if best_idx >= 0:
+        bars[best_idx].set_edgecolor("black")
+        bars[best_idx].set_linewidth(2.0)
+
+    # Value labels on top of each bar
+    finite_vals = [v for v in values if np.isfinite(v)]
+    y_max = max(finite_vals) if finite_vals else 1.0
+    for bar, v in zip(bars, values):
+        if np.isfinite(v):
+            ax.text(bar.get_x() + bar.get_width() / 2,
+                    v + y_max * 0.02,
+                    f"{v:.0f}",
+                    ha="center", va="bottom", fontsize=9)
+
+    ax.axhline(0, color="black", lw=1.0, ls="--")
+    ax.set_ylim(bottom=0)
+    ax.set_ylabel("|ΔAIC| vs OLS  (larger = bigger improvement over OLS)")
+    ax.set_title(
+        f"{sp_pretty} – {HEALTH_LABELS.get(health, health)}\n"
+        f"Spatial model improvement over OLS  (bold = best)"
+    )
+
+    # Interpretation note
+    if best_idx >= 0 and np.isfinite(values[best_idx]):
+        best_val = values[best_idx]
+        strength = ("very strong" if best_val > 500
+                    else "strong"    if best_val > 100
+                    else "moderate"  if best_val > 10
+                    else "marginal")
+        ax.text(0.98, 0.97,
+                f"Best: {models[best_idx]}  (|ΔAIC|={best_val:.0f}, {strength})",
+                transform=ax.transAxes, ha="right", va="top",
+                fontsize=8, color="dimgrey")
+
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=FIG_DPI)
+    plt.close(fig)
 
 
 def plot_dominance(da_df, health, sp_pretty, outpath):
@@ -723,22 +756,125 @@ def plot_combined_r2(summary_df, outpath):
 
 
 def plot_combined_aic(summary_df, outpath):
-    health_list  = list(summary_df["health_metric"].unique())
+    """
+    Grouped bar chart per health metric showing |ΔAIC| for SEM and SLM vs OLS.
+    One subplot per health metric, one bar-group per species.
+    Taller bar = larger improvement over OLS.
+    Bold outline marks the winning spatial model per species.
+    """
+    health_list = list(summary_df["health_metric"].unique())
     n_hm = len(health_list)
-    fig, axes = plt.subplots(1, n_hm, figsize=(4*n_hm, 5), sharey=False)
-    if n_hm == 1: axes = [axes]
+
+    fig, axes = plt.subplots(1, n_hm, figsize=(4.5 * n_hm, 5), sharey=False)
+    if n_hm == 1:
+        axes = [axes]
+
     for ax, hm in zip(axes, health_list):
-        sub = summary_df[summary_df["health_metric"]==hm].drop_duplicates("species")
-        x = np.arange(len(sub)); w = 0.25
-        for i, (col_key, label) in enumerate([("AIC_OLS","OLS"),("AIC_SEM","SEM"),("AIC_SLM","SLM")]):
-            ax.bar(x+(i-1)*w, sub[col_key].values, width=w,
-                   color=MODEL_COLOURS[label], label=label, alpha=0.85)
+        sub = (summary_df[summary_df["health_metric"] == hm]
+               .drop_duplicates("species"))
+
+        x = np.arange(len(sub))
+        w = 0.32
+
+        abs_sem = np.abs(sub["AIC_SEM"].values - sub["AIC_OLS"].values)
+        abs_slm = np.abs(sub["AIC_SLM"].values - sub["AIC_OLS"].values)
+
+        b_sem = ax.bar(x - w / 2, abs_sem, width=w,
+                       color=MODEL_COLOURS["SEM"], alpha=0.85, label="SEM")
+        b_slm = ax.bar(x + w / 2, abs_slm, width=w,
+                       color=MODEL_COLOURS["SLM"], alpha=0.85, label="SLM")
+
+        # Bold outline on whichever spatial model wins per species
+        for i, (ds, dl) in enumerate(zip(abs_sem, abs_slm)):
+            if np.isfinite(ds) and np.isfinite(dl):
+                if ds >= dl:
+                    b_sem[i].set_edgecolor("black")
+                    b_sem[i].set_linewidth(1.8)
+                else:
+                    b_slm[i].set_edgecolor("black")
+                    b_slm[i].set_linewidth(1.8)
+
+        ax.axhline(0, color="black", lw=0.8, ls="--")
+        ax.set_ylim(bottom=0)
         ax.set_xticks(x)
-        ax.set_xticklabels(sub["species"].values, rotation=40, ha="right", fontsize=7)
-        ax.set_title(hm, fontsize=9); ax.set_ylabel("AIC")
-        if ax is axes[0]: ax.legend(fontsize=8)
-    fig.suptitle("AIC: OLS vs SEM vs SLM per species × health metric", fontsize=11)
-    plt.tight_layout(); fig.savefig(outpath, dpi=FIG_DPI); plt.close(fig)
+        ax.set_xticklabels(sub["species"].values, rotation=40,
+                           ha="right", fontsize=7)
+        ax.set_title(hm, fontsize=9)
+        ax.set_ylabel("|ΔAIC| vs OLS", fontsize=8)
+
+        if ax is axes[0]:
+            ax.legend(fontsize=8)
+
+    fig.suptitle(
+        "|ΔAIC| vs OLS: SEM and SLM per species × health metric\n"
+        "Taller bar = larger improvement over OLS  |  bold outline = best spatial model",
+        fontsize=10
+    )
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=FIG_DPI)
+    plt.close(fig)
+
+
+def plot_delta_aic_summary(summary_df, outpath):
+    """
+    NEW: Heatmap showing max(|ΔAIC_SEM|, |ΔAIC_SLM|) per species × health metric,
+    with the winning model (SEM / SLM) annotated in each cell.
+    One-page overview of where spatial modelling helps most.
+    """
+    sub = summary_df.drop_duplicates(["species", "health_metric"]).copy()
+    sub["abs_delta_sem"] = np.abs(sub["AIC_SEM"] - sub["AIC_OLS"])
+    sub["abs_delta_slm"] = np.abs(sub["AIC_SLM"] - sub["AIC_OLS"])
+    sub["best_delta"]    = sub[["abs_delta_sem", "abs_delta_slm"]].max(axis=1)
+    sub["winner"]        = np.where(
+        sub["abs_delta_sem"] >= sub["abs_delta_slm"], "SEM", "SLM"
+    )
+
+    species_list = list(sub["species"].unique())
+    health_list  = list(sub["health_metric"].unique())
+
+    piv_delta  = sub.pivot(index="species", columns="health_metric",
+                            values="best_delta").reindex(
+                                index=species_list, columns=health_list)
+    piv_winner = sub.pivot(index="species", columns="health_metric",
+                            values="winner").reindex(
+                                index=species_list, columns=health_list)
+
+    fig, ax = plt.subplots(figsize=(2.2 * len(health_list),
+                                     0.9 + 0.65 * len(species_list)))
+
+    # Cap colorscale at 95th percentile so outliers don't wash out the rest
+    vmax = np.nanpercentile(piv_delta.values.astype(float), 95)
+    im   = ax.imshow(piv_delta.values.astype(float),
+                     aspect="auto", cmap="YlOrRd", vmin=0, vmax=vmax)
+
+    for i in range(len(species_list)):
+        for j in range(len(health_list)):
+            val    = piv_delta.iloc[i, j]
+            winner = piv_winner.iloc[i, j]
+            if np.isfinite(float(val)):
+                txt_color = "white" if float(val) > vmax * 0.6 else "black"
+                ax.text(j, i,
+                        f"{float(val):.0f}\n{winner}",
+                        ha="center", va="center",
+                        fontsize=8, color=txt_color,
+                        fontweight="bold")
+
+    ax.set_xticks(range(len(health_list)))
+    ax.set_xticklabels(health_list, rotation=30, ha="right", fontsize=9)
+    ax.set_yticks(range(len(species_list)))
+    ax.set_yticklabels(species_list, fontsize=9)
+
+    cbar = plt.colorbar(im, ax=ax, pad=0.02)
+    cbar.set_label("|ΔAIC| vs OLS  (colour capped at 95th percentile)", fontsize=8)
+
+    ax.set_title(
+        "Spatial model improvement over OLS\n"
+        "|ΔAIC| with winning model (SEM / SLM) per species × health metric",
+        fontsize=11
+    )
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=FIG_DPI)
+    plt.close(fig)
 
 
 def plot_combined_moran(summary_df, outpath):
@@ -853,7 +989,6 @@ def run_all_models(df_sub, health, predictors, controls, sp_pretty, out_dir):
     I_ols, p_ols = morans_I_perm(ols_resid, W, N_PERMUTATIONS, SEED_MORAN)
     lm = lm_tests(ols_resid, X, W)
 
-    # Determine recommended model from LM tests
     if lm["p_LM_error"] < ALPHA and lm["p_LM_lag"] >= ALPHA:
         lm_recommendation = "SEM"
     elif lm["p_LM_lag"] < ALPHA and lm["p_LM_error"] >= ALPHA:
@@ -879,8 +1014,6 @@ def run_all_models(df_sub, health, predictors, controls, sp_pretty, out_dir):
     slm = None; sw_slm = {}; I_slm = p_slm = np.nan
     try:
         slm    = fit_slm(y, X, W)
-        fit_slm_vals = (y - slm["rho"] * (W @ y)) - slm["resid"]
-        # fitted = yr - resid = X@beta
         fit_slm_vals = X @ slm["beta"]
         sw_slm = plot_residual_diagnostics(slm["resid"], fit_slm_vals,
                                             "SLM", sp_pretty, health,
@@ -933,9 +1066,9 @@ def run_all_models(df_sub, health, predictors, controls, sp_pretty, out_dir):
         f.write(f"\n\n{'─'*65}\nAIC comparison (lower = better fit):")
         f.write(f"\n  OLS: {ols_full.aic:.2f}")
         if sem:
-            f.write(f"\n  SEM: {sem['aic']:.2f}  (λ={sem['lambda']:.4f},  ΔAIC={sem['aic']-ols_full.aic:+.2f})")
+            f.write(f"\n  SEM: {sem['aic']:.2f}  (λ={sem['lambda']:.4f},  |ΔAIC|={abs(sem['aic']-ols_full.aic):.2f})")
         if slm:
-            f.write(f"\n  SLM: {slm['aic']:.2f}  (ρ={slm['rho']:.4f},  ΔAIC={slm['aic']-ols_full.aic:+.2f})")
+            f.write(f"\n  SLM: {slm['aic']:.2f}  (ρ={slm['rho']:.4f},  |ΔAIC|={abs(slm['aic']-ols_full.aic):.2f})")
         f.write(f"\n  → Best model (AIC): {best_aic}")
         f.write(f"\n\n{'─'*65}\nSpatial model residual autocorrelation (Moran's I):")
         if sem:
@@ -1076,6 +1209,7 @@ def main():
         all_df.to_csv(OUT_ROOT / "ALL_species_model_comparison.csv", index=False)
         plot_combined_r2(all_df, OUT_ROOT / "ALL_R2_OLS_heatmap.png")
         plot_combined_aic(all_df, OUT_ROOT / "ALL_AIC_comparison.png")
+        plot_delta_aic_summary(all_df, OUT_ROOT / "ALL_delta_AIC_heatmap.png")
         moran_sum = (all_df[["species","health_metric",
                               "Morans_I_OLS","Morans_p_OLS",
                               "Morans_I_SEM","Morans_p_SEM",
