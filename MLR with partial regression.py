@@ -62,6 +62,24 @@ PARTIAL REGRESSION NOTE
       OLS coefficient and t-statistic — it is just a different visualisation of the
       same β, making leverage points and non-linearities easier to spot.
 
+DAG-MOTIVATED MODEL SPECIFICATIONS
+  Three OLS specifications bracket the causal uncertainty around whether LST is a
+  mediator (impervious → LST → tree stress) or an independent stressor.
+
+  Spec 1 — Full model (existing):
+    y ~ imperv + BC + LST + insolation + height
+    Risk: if LST mediates impervious, this over-controls and underestimates imperv effect.
+
+  Spec 2 — Urbanisation-only:
+    y ~ imperv + height
+    Answers: total effect of impervious cover, assuming LST/BC are downstream (DAG A).
+    If imperv beta is much larger here than Spec 1, mediation is likely.
+
+  Spec 3 — Thermal-only:
+    y ~ LST + height
+    Answers: how much does temperature alone explain, independently of sealing?
+    If R2 similar to Spec 1, impervious adds little beyond thermal stress.
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUTS PER SPECIES × HEALTH METRIC
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -74,20 +92,23 @@ OUTPUTS PER SPECIES × HEALTH METRIC
   {health}_moran_comparison.png        — Moran's I before/after spatial correction
   {health}_AIC_comparison.png          — |ΔAIC| vs OLS for SEM and SLM
   {health}_dominance.png/.csv          — dominance analysis (OLS-based)
-  {health}_partial_regression.png      — NEW: added-variable plots (OLS-based)
-  {health}_partial_regression.csv      — NEW: partial R², slope, t-stat per predictor
-  {health}_model_summary.txt           — full text output for all three models
+  {health}_partial_regression.png      — added-variable plots (OLS-based)
+  {health}_partial_regression.csv      — partial R2, slope, t-stat per predictor
+  {health}_dag_sensitivity.png         — NEW: imperv beta and R2 across 3 DAG specs
+  {health}_model_summary.txt           — full text output for all models
 
 COMBINED ACROSS ALL SPECIES
-  ALL_species_model_comparison.csv     — one row per species × metric × predictor
+  ALL_species_model_comparison.csv     — one row per species x metric x predictor
   ALL_R2_OLS_heatmap.png
-  ALL_AIC_comparison.png               — |ΔAIC| grouped bar chart per health metric
-  ALL_delta_AIC_heatmap.png            — heatmap of |ΔAIC| with winning model
+  ALL_AIC_comparison.png               — |DAIC| grouped bar chart per health metric
+  ALL_delta_AIC_heatmap.png            — heatmap of |DAIC| with winning model
   ALL_Morans_comparison.png
   ALL_species_dominance.csv
   ALL_dominance_stacked.png
-  ALL_partial_R2_heatmap.png           — NEW: partial R² heatmap across species × metrics
-  ALL_partial_dominance_comparison.png — NEW: partial R² vs dominance weight scatter
+  ALL_partial_R2_heatmap.png           — partial R2 heatmap across species x metrics
+  ALL_partial_dominance_comparison.png — partial R2 vs dominance weight scatter
+  ALL_dag_coef_sensitivity.png         — NEW: imperv beta across 3 specs all species
+  ALL_dag_r2_comparison.png            — NEW: R2 of 3 specs per health metric heatmap
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 REFERENCES
@@ -213,6 +234,28 @@ BIOLOGICAL_FILTERS = {
 DA_COLOURS    = ["#4C72B0", "#DD8452", "#55A868", "#C44E52",
                  "#8172B2", "#937860", "#DA8BC3", "#8C8C8C"]
 MODEL_COLOURS = {"OLS": "#4C72B0", "SEM": "#DD8452", "SLM": "#55A868"}
+
+# DAG-motivated model specifications
+# Each entry: (label, predictors_list, description)
+# Controls (height) are always added automatically.
+DAG_SPECS = [
+    (
+        "Spec1_Full",
+        ["imperv_100m", "poll_bc_anmean", "lst_temp_r100_y", "insolation9"],
+        "Full model\n(imperv + BC + LST + insolation)",
+    ),
+    (
+        "Spec2_Urb",
+        ["imperv_100m"],
+        "Urbanisation-only\n(imperv, total effect — DAG A)",
+    ),
+    (
+        "Spec3_Thermal",
+        ["lst_temp_r100_y"],
+        "Thermal-only\n(LST, independent stressor — DAG B)",
+    ),
+]
+DAG_COLOURS = {"Spec1_Full": "#4C72B0", "Spec2_Urb": "#DD8452", "Spec3_Thermal": "#55A868"}
 
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -1235,13 +1278,375 @@ def plot_combined_dominance_stacked(da_all, outpath):
 
 
 # ╔══════════════════════════════════════════════════════════╗
+# ║         DAG-MOTIVATED SPECIFICATION ANALYSIS            ║
+# ╚══════════════════════════════════════════════════════════╝
+
+def fit_dag_specs(y: np.ndarray,
+                  d: pd.DataFrame,
+                  W: np.ndarray,
+                  controls: list,
+                  sp_pretty: str,
+                  h_lbl: str) -> list:
+    """
+    Fit the three DAG-motivated OLS + SEM specifications and return a list of
+    result dicts, one per spec.  SEM is used (not SLM) because SEM wins in the
+    large majority of cases and gives a consistent spatial correction across specs.
+
+    Each dict contains:
+      spec_key      : e.g. "Spec1_Full"
+      spec_label    : human-readable multi-line label
+      predictors    : list of predictor column names in this spec
+      n             : sample size
+      R2            : OLS R² (all predictors + controls)
+      R2_adj        : OLS adjusted R²
+      coef_imperv   : OLS coefficient for imperv_100m (nan if not in spec)
+      se_imperv     : OLS SE for imperv_100m
+      p_imperv      : OLS p-value for imperv_100m
+      coef_lst      : OLS coefficient for lst_temp_r100_y (nan if not in spec)
+      se_lst        : OLS SE for lst_temp_r100_y
+      p_lst         : OLS p-value for lst_temp_r100_y
+      sem_coef_imperv : SEM coefficient for imperv_100m (nan if not in spec)
+      sem_se_imperv   : SEM SE for imperv_100m
+      sem_coef_lst    : SEM coefficient for lst_temp_r100_y
+      sem_se_lst      : SEM SE for lst_temp_r100_y
+      sem_lambda      : estimated lambda
+      species         : sp_pretty
+      health_metric   : h_lbl
+    """
+    results = []
+
+    for spec_key, spec_preds, spec_label in DAG_SPECS:
+        all_cols = spec_preds + controls
+        # Ensure all columns exist in d
+        missing = [c for c in all_cols if c not in d.columns]
+        if missing:
+            print(f"    [DAG {spec_key}] missing columns: {missing}, skipping")
+            continue
+
+        sub = d[all_cols + ["_y_"]].dropna() if "_y_" in d.columns else d[all_cols].copy()
+        # Use the already-filtered d; y is passed in separately
+        X_df  = d[all_cols].copy()
+        X_sm  = sm.add_constant(X_df, has_constant="add")
+        X_arr = X_sm.values.astype(float)
+        col_names = list(X_sm.columns)
+        col_idx   = {c: i for i, c in enumerate(col_names)}
+
+        # OLS
+        try:
+            ols = sm.OLS(y, X_sm).fit()
+        except Exception as e:
+            print(f"    [DAG {spec_key} OLS error] {e}")
+            continue
+
+        def _get_ols(col):
+            p  = float(ols.params.get(col, np.nan))
+            se = float(ols.bse.get(col,   np.nan))
+            pv = float(ols.pvalues.get(col, np.nan))
+            return p, se, pv
+
+        co_imp, se_imp, pv_imp = _get_ols("imperv_100m")
+        co_lst, se_lst, pv_lst = _get_ols("lst_temp_r100_y")
+
+        # SEM
+        sem_co_imp = sem_se_imp = sem_co_lst = sem_se_lst = sem_lam = np.nan
+        try:
+            sem_res = fit_sem(y, X_arr, W)
+            def _get_sem(col):
+                idx = col_idx.get(col)
+                if idx is None:
+                    return np.nan, np.nan
+                return float(sem_res["beta"][idx]), float(sem_res["se"][idx])
+            sem_co_imp, sem_se_imp = _get_sem("imperv_100m")
+            sem_co_lst, sem_se_lst = _get_sem("lst_temp_r100_y")
+            sem_lam = float(sem_res["lambda"])
+        except Exception as e:
+            print(f"    [DAG {spec_key} SEM error] {e}")
+
+        results.append({
+            "spec_key":         spec_key,
+            "spec_label":       spec_label,
+            "predictors":       spec_preds,
+            "n":                len(y),
+            "R2":               float(ols.rsquared),
+            "R2_adj":           float(ols.rsquared_adj),
+            "coef_imperv":      co_imp,
+            "se_imperv":        se_imp,
+            "p_imperv":         pv_imp,
+            "coef_lst":         co_lst,
+            "se_lst":           se_lst,
+            "p_lst":            pv_lst,
+            "sem_coef_imperv":  sem_co_imp,
+            "sem_se_imperv":    sem_se_imp,
+            "sem_coef_lst":     sem_co_lst,
+            "sem_se_lst":       sem_se_lst,
+            "sem_lambda":       sem_lam,
+            "species":          sp_pretty,
+            "health_metric":    h_lbl,
+        })
+
+    return results
+
+
+def plot_dag_sensitivity(dag_results: list,
+                          health: str,
+                          sp_pretty: str,
+                          outpath: Path) -> None:
+    """
+    Per-species × health metric DAG sensitivity figure.
+
+    Two panels:
+      Left  — OLS and SEM coefficients for imperv_100m and lst_temp_r100_y
+              across the three specifications, with 95% CI bars.
+              This is the mediation sensitivity check: if β_imperv drops
+              substantially from Spec2 → Spec1, LST is mediating part of the effect.
+      Right — Adjusted R² of OLS for each specification.
+              Shows how much explanatory power is lost/gained by restricting
+              to one predictor family.
+    """
+    if not dag_results:
+        return
+
+    h_lbl     = HEALTH_LABELS.get(health, health)
+    spec_keys  = [r["spec_key"]   for r in dag_results]
+    spec_labels = [r["spec_label"] for r in dag_results]
+    x          = np.arange(len(dag_results))
+    w          = 0.28
+
+    fig, (ax_coef, ax_r2) = plt.subplots(
+        1, 2, figsize=(13, 5), gridspec_kw={"width_ratios": [2, 1]}
+    )
+
+    # ── Left panel: coefficients ──────────────────────────────
+    # imperv OLS
+    imp_coef = np.array([r["coef_imperv"]     for r in dag_results])
+    imp_se   = np.array([r["se_imperv"]        for r in dag_results])
+    imp_sem  = np.array([r["sem_coef_imperv"]  for r in dag_results])
+    imp_ssem = np.array([r["sem_se_imperv"]    for r in dag_results])
+
+    # lst OLS
+    lst_coef = np.array([r["coef_lst"]         for r in dag_results])
+    lst_se   = np.array([r["se_lst"]            for r in dag_results])
+    lst_sem  = np.array([r["sem_coef_lst"]      for r in dag_results])
+    lst_ssem = np.array([r["sem_se_lst"]        for r in dag_results])
+
+    def _plot_coef(ax, xpos, coefs, ses, color, label, marker="o", ls="-"):
+        finite = np.isfinite(coefs)
+        if not finite.any():
+            return
+        ax.plot(xpos[finite], coefs[finite],
+                marker=marker, color=color, ls=ls, lw=1.6,
+                ms=7, label=label, zorder=3)
+        for xi, ci, si in zip(xpos[finite], coefs[finite], ses[finite]):
+            if np.isfinite(si):
+                ax.errorbar(xi, ci, yerr=1.96 * si,
+                            fmt="none", color=color, capsize=4, lw=1.2, zorder=2)
+
+    _plot_coef(ax_coef, x,          imp_coef, imp_se,   "#4C72B0",
+               "Impervious (OLS)",  marker="o", ls="-")
+    _plot_coef(ax_coef, x + 0.02,   imp_sem,  imp_ssem, "#4C72B0",
+               "Impervious (SEM)",  marker="s", ls="--")
+    _plot_coef(ax_coef, x,          lst_coef, lst_se,   "#DD8452",
+               "LST (OLS)",         marker="o", ls="-")
+    _plot_coef(ax_coef, x + 0.02,   lst_sem,  lst_ssem, "#DD8452",
+               "LST (SEM)",         marker="s", ls="--")
+
+    ax_coef.axhline(0, color="grey", lw=0.8, ls=":")
+    ax_coef.set_xticks(x)
+    ax_coef.set_xticklabels(spec_labels, fontsize=8)
+    ax_coef.set_ylabel("Regression coefficient (± 95% CI)", fontsize=9)
+    ax_coef.set_title("Coefficient sensitivity across DAG specifications\n"
+                       "Stable β_imperv (Spec2→1): direct effect  |  "
+                       "Large drop: LST mediates imperv", fontsize=8)
+    ax_coef.legend(fontsize=8, framealpha=0.8)
+
+    # Annotation: % change in imperv beta from Spec2 → Spec1
+    spec_keys_list = [r["spec_key"] for r in dag_results]
+    if "Spec1_Full" in spec_keys_list and "Spec2_Urb" in spec_keys_list:
+        idx1 = spec_keys_list.index("Spec1_Full")
+        idx2 = spec_keys_list.index("Spec2_Urb")
+        b1   = imp_coef[idx1]; b2 = imp_coef[idx2]
+        if np.isfinite(b1) and np.isfinite(b2) and abs(b2) > 1e-10:
+            pct_change = (b1 - b2) / abs(b2) * 100
+            direction  = "drop" if pct_change < 0 else "increase"
+            ax_coef.text(
+                0.98, 0.02,
+                f"β_imperv Spec2→Spec1: {pct_change:+.1f}% {direction}\n"
+                f"({'consistent with mediation' if pct_change < -15 else 'direct effect likely'})",
+                transform=ax_coef.transAxes, ha="right", va="bottom",
+                fontsize=7.5, color="dimgrey",
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                          alpha=0.8, edgecolor="lightgrey")
+            )
+
+    # ── Right panel: R² ──────────────────────────────────────
+    r2_vals  = np.array([r["R2_adj"] for r in dag_results])
+    bar_cols = [DAG_COLOURS.get(k, "steelblue") for k in spec_keys]
+    bars = ax_r2.bar(x, r2_vals, color=bar_cols, alpha=0.85,
+                     edgecolor="white", width=0.55)
+    for bar, v in zip(bars, r2_vals):
+        if np.isfinite(v):
+            ax_r2.text(bar.get_x() + bar.get_width() / 2,
+                       v + max(r2_vals) * 0.02,
+                       f"{v:.3f}", ha="center", va="bottom", fontsize=9)
+    ax_r2.set_xticks(x)
+    ax_r2.set_xticklabels(spec_labels, fontsize=8)
+    ax_r2.set_ylabel("Adjusted R² (OLS)", fontsize=9)
+    ax_r2.set_ylim(bottom=0)
+    ax_r2.set_title("Model fit (adj. R²) per specification\n"
+                     "Thermal-only ≈ Full → imperv adds little beyond LST", fontsize=8)
+
+    fig.suptitle(f"{sp_pretty} – {h_lbl}\n"
+                 f"DAG specification sensitivity analysis",
+                 fontsize=10)
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=FIG_DPI)
+    plt.close(fig)
+
+
+def plot_combined_dag_coef(dag_all: pd.DataFrame, outpath: Path) -> None:
+    """
+    Combined figure: β_imperv (OLS and SEM) across the three DAG specifications
+    for every species × health metric, arranged as a grid of small multiples.
+
+    Rows = health metrics, columns = species.
+    Within each panel: three x-positions (one per spec), OLS circle + SEM square,
+    with 95% CI bars.  A horizontal dashed line at y=0.
+    The key visual signal: does β_imperv shrink from Spec2 to Spec1?
+    """
+    species_list = list(dag_all["species"].unique())
+    health_list  = list(dag_all["health_metric"].unique())
+    n_sp = len(species_list)
+    n_hm = len(health_list)
+
+    fig, axes = plt.subplots(
+        n_hm, n_sp,
+        figsize=(3.2 * n_sp, 3.0 * n_hm),
+        sharex=False, sharey=False,
+        squeeze=False
+    )
+
+    spec_order  = ["Spec2_Urb", "Spec1_Full"]   # Spec3 has no imperv, skip
+    spec_x      = {s: i for i, s in enumerate(spec_order)}
+    spec_labels = {"Spec2_Urb": "Spec2\n(urb-only)", "Spec1_Full": "Spec1\n(full)"}
+
+    for ri, hm in enumerate(health_list):
+        for ci, sp in enumerate(species_list):
+            ax  = axes[ri][ci]
+            sub = dag_all[(dag_all["health_metric"] == hm) &
+                          (dag_all["species"] == sp) &
+                          (dag_all["spec_key"].isin(spec_order))]
+
+            for _, row in sub.iterrows():
+                xp = spec_x.get(row["spec_key"], None)
+                if xp is None:
+                    continue
+                # OLS
+                if np.isfinite(row["coef_imperv"]):
+                    ax.errorbar(xp - 0.1, row["coef_imperv"],
+                                yerr=1.96 * row["se_imperv"] if np.isfinite(row["se_imperv"]) else 0,
+                                fmt="o", color="#4C72B0", ms=5, capsize=3, lw=1.1,
+                                label="OLS" if (ri == 0 and ci == 0 and xp == 0) else "_")
+                # SEM
+                if np.isfinite(row["sem_coef_imperv"]):
+                    ax.errorbar(xp + 0.1, row["sem_coef_imperv"],
+                                yerr=1.96 * row["sem_se_imperv"] if np.isfinite(row["sem_se_imperv"]) else 0,
+                                fmt="s", color="#DD8452", ms=5, capsize=3, lw=1.1,
+                                label="SEM" if (ri == 0 and ci == 0 and xp == 0) else "_")
+
+            ax.axhline(0, color="grey", lw=0.7, ls=":")
+            ax.set_xticks(list(spec_x.values()))
+            ax.set_xticklabels([spec_labels[s] for s in spec_order], fontsize=6)
+            ax.tick_params(axis="y", labelsize=6)
+
+            if ci == 0:
+                ax.set_ylabel(hm, fontsize=7, labelpad=2)
+            if ri == 0:
+                ax.set_title(sp, fontsize=7)
+
+    # Global legend
+    handles = [
+        plt.Line2D([0], [0], marker="o", color="#4C72B0", ls="none", ms=6, label="OLS"),
+        plt.Line2D([0], [0], marker="s", color="#DD8452", ls="none", ms=6, label="SEM"),
+    ]
+    fig.legend(handles=handles, loc="lower center", ncol=2,
+               fontsize=8, framealpha=0.8, bbox_to_anchor=(0.5, -0.02))
+
+    fig.suptitle(
+        "Impervious surface coefficient (β) across DAG specifications\n"
+        "Spec2 = total effect (urbanisation-only)  |  Spec1 = partial effect (full model)\n"
+        "Large Spec2→Spec1 drop suggests LST/BC mediate part of the impervious effect",
+        fontsize=9
+    )
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
+    fig.savefig(outpath, dpi=FIG_DPI, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_combined_dag_r2(dag_all: pd.DataFrame, outpath: Path) -> None:
+    """
+    Heatmap grid: adjusted R² of each DAG specification per species × health metric.
+    Three sub-heatmaps side by side, one per specification.
+    Allows rapid visual comparison of how much explanatory power each spec captures.
+    """
+    species_list = list(dag_all["species"].unique())
+    health_list  = list(dag_all["health_metric"].unique())
+    spec_order   = ["Spec1_Full", "Spec2_Urb", "Spec3_Thermal"]
+    spec_labels_map = {
+        "Spec1_Full":     "Spec1: Full model",
+        "Spec2_Urb":      "Spec2: Urbanisation-only",
+        "Spec3_Thermal":  "Spec3: Thermal-only",
+    }
+
+    fig, axes = plt.subplots(1, 3, figsize=(5.5 * 3, 0.8 + 0.65 * len(species_list)),
+                              sharey=True)
+
+    # Determine common vmax across all specs for comparable colour scale
+    vmax = dag_all["R2_adj"].max()
+
+    for ax, spec_key in zip(axes, spec_order):
+        sub = dag_all[dag_all["spec_key"] == spec_key]
+        piv = (sub.pivot(index="species", columns="health_metric", values="R2_adj")
+               .reindex(index=species_list, columns=health_list))
+
+        im = ax.imshow(piv.values.astype(float),
+                       aspect="auto", cmap="YlOrRd",
+                       vmin=0, vmax=vmax)
+
+        for i in range(len(species_list)):
+            for j in range(len(health_list)):
+                v = piv.iloc[i, j]
+                if np.isfinite(float(v)):
+                    ax.text(j, i, f"{float(v):.3f}",
+                            ha="center", va="center", fontsize=8,
+                            color="white" if float(v) > vmax * 0.65 else "black")
+
+        ax.set_xticks(range(len(health_list)))
+        ax.set_xticklabels(health_list, rotation=35, ha="right", fontsize=8)
+        ax.set_yticks(range(len(species_list)))
+        ax.set_yticklabels(species_list, fontsize=8)
+        ax.set_title(spec_labels_map.get(spec_key, spec_key), fontsize=9)
+
+    plt.colorbar(im, ax=axes[-1], label="Adjusted R² (OLS)", shrink=0.8)
+    fig.suptitle(
+        "Adjusted R² per DAG specification × species × health metric\n"
+        "Spec3 ≈ Spec1 → temperature alone captures most variance  |  "
+        "Spec2 ≈ Spec1 → impervious alone is sufficient",
+        fontsize=10
+    )
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=FIG_DPI)
+    plt.close(fig)
+
+
+# ╔══════════════════════════════════════════════════════════╗
 # ║          CORE PER-METRIC FUNCTION                       ║
 # ╚══════════════════════════════════════════════════════════╝
 
 def run_all_models(df_sub, health, predictors, controls, sp_pretty, out_dir):
     """
-    Fit OLS + SEM + SLM for one species × health metric combination.
-    Returns (summary_rows, da_rows, pr_rows).
+    Fit OLS + SEM + SLM for one species x health metric combination.
+    Also runs the three DAG-motivated specifications.
+    Returns (summary_rows, da_rows, pr_rows, dag_rows).
     """
     all_x_cols = predictors + controls
     needed     = [health] + all_x_cols + COORD_COLS
@@ -1253,7 +1658,7 @@ def run_all_models(df_sub, health, predictors, controls, sp_pretty, out_dir):
 
     if len(d) < MIN_N:
         print(f"    [skip] {health}: n={len(d)} < {MIN_N}")
-        return [], [], []
+        return [], [], [], []
 
     n      = len(d)
     h_safe = health.replace("/", "_")
@@ -1502,7 +1907,41 @@ def run_all_models(df_sub, health, predictors, controls, sp_pretty, out_dir):
             "p_value":        r["p_value"],
         })
 
-    return rows, da_df.to_dict("records"), pr_export_rows
+    # ── DAG specification analysis ────────────────────────────
+    # Uses the same filtered dataset d and spatial weights W.
+    dag_results = fit_dag_specs(
+        y         = y,
+        d         = d,
+        W         = W,
+        controls  = controls,
+        sp_pretty = sp_pretty,
+        h_lbl     = h_lbl,
+    )
+    plot_dag_sensitivity(
+        dag_results = dag_results,
+        health      = health,
+        sp_pretty   = sp_pretty,
+        outpath     = out_dir / f"{h_safe}_dag_sensitivity.png",
+    )
+
+    # Write DAG results to text summary
+    with open(out_dir / f"{h_safe}_model_summary.txt", "a") as f:
+        f.write(f"\n\n{'─'*65}\nDAG specification sensitivity:\n")
+        for r in dag_results:
+            f.write(f"\n  {r['spec_key']:20s}  R2_adj={r['R2_adj']:.4f}"
+                    f"  beta_imperv_OLS={r['coef_imperv']:+.4f} (SE={r['se_imperv']:.4f})"
+                    f"  beta_lst_OLS={r['coef_lst']:+.4f} (SE={r['se_lst']:.4f})")
+        # Mediation indicator
+        spec_keys_d = {r["spec_key"]: r for r in dag_results}
+        if "Spec1_Full" in spec_keys_d and "Spec2_Urb" in spec_keys_d:
+            b1 = spec_keys_d["Spec1_Full"]["coef_imperv"]
+            b2 = spec_keys_d["Spec2_Urb"]["coef_imperv"]
+            if np.isfinite(b1) and np.isfinite(b2) and abs(b2) > 1e-10:
+                pct = (b1 - b2) / abs(b2) * 100
+                f.write(f"\n  Beta_imperv Spec2->Spec1: {pct:+.1f}%"
+                        f"  ({'possible mediation' if pct < -15 else 'direct effect likely'})")
+
+    return rows, da_df.to_dict("records"), pr_export_rows, dag_results
 
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -1513,6 +1952,7 @@ def main():
     all_rows = []
     all_da   = []
     all_pr   = []   # partial regression rows for combined plots
+    all_dag  = []   # DAG specification rows for combined plots
 
     for species, csv_path in SPECIES_CSVS.items():
         print(f"\n{'='*60}\n  {species}\n{'='*60}")
@@ -1544,17 +1984,18 @@ def main():
         df = apply_filters(df, required + COORD_COLS)
         print(f"  n = {len(df)} trees after filtering")
 
-        sp_rows, sp_da, sp_pr = [], [], []
+        sp_rows, sp_da, sp_pr, sp_dag = [], [], [], []
         for health in HEALTH_VARS:
             print(f"  → {HEALTH_LABELS.get(health, health)}")
             h_out = sp_out / health
             ensure_dir(h_out)
-            rows, da_rows, pr_rows = run_all_models(
+            rows, da_rows, pr_rows, dag_rows = run_all_models(
                 df, health, PREDICTORS, CONTROL_VARS, sp_pretty, h_out
             )
             sp_rows.extend(rows)
             sp_da.extend(da_rows)
             sp_pr.extend(pr_rows)
+            sp_dag.extend(dag_rows)
 
         if not sp_rows:
             print("  [skip] No results produced."); continue
@@ -1564,10 +2005,13 @@ def main():
             pd.DataFrame(sp_da).to_csv(sp_out / "dominance_all_metrics.csv", index=False)
         if sp_pr:
             pd.DataFrame(sp_pr).to_csv(sp_out / "partial_regression_all_metrics.csv", index=False)
+        if sp_dag:
+            pd.DataFrame(sp_dag).to_csv(sp_out / "dag_specs_all_metrics.csv", index=False)
 
         all_rows.extend(sp_rows)
         all_da.extend(sp_da)
         all_pr.extend(sp_pr)
+        all_dag.extend(sp_dag)
         print(f"  [ok] → {sp_out}")
 
     # Combined outputs
@@ -1604,7 +2048,13 @@ def main():
                 OUT_ROOT / "ALL_partial_dominance_comparison.png"
             )
 
-    if all_rows or all_da or all_pr:
+    if all_dag:
+        all_dag_df = pd.DataFrame(all_dag)
+        all_dag_df.to_csv(OUT_ROOT / "ALL_dag_specs.csv", index=False)
+        plot_combined_dag_coef(all_dag_df, OUT_ROOT / "ALL_dag_coef_sensitivity.png")
+        plot_combined_dag_r2(all_dag_df, OUT_ROOT / "ALL_dag_r2_comparison.png")
+
+    if all_rows or all_da or all_pr or all_dag:
         print(f"\n[ok] All outputs saved to: {OUT_ROOT}")
     else:
         print("\n[warn] No results. Check paths, column names, and MIN_N.")
