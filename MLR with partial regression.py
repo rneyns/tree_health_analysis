@@ -156,6 +156,26 @@ import statsmodels.api as sm
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 from sklearn.neighbors import NearestNeighbors
 
+# ── Global font sizes ─────────────────────────────────────────────────────────
+# Adjust these two values to scale all figure text up or down uniformly.
+# BASE_FONT  : axes tick labels, legend entries, annotation text
+# TITLE_FONT : axes titles and figure suptitles
+BASE_FONT  = 12
+TITLE_FONT = 13
+
+import matplotlib as mpl
+mpl.rcParams.update({
+    "font.size":           BASE_FONT,
+    "axes.titlesize":      TITLE_FONT,
+    "axes.labelsize":      BASE_FONT,
+    "xtick.labelsize":     BASE_FONT - 1,
+    "ytick.labelsize":     BASE_FONT - 1,
+    "legend.fontsize":     BASE_FONT - 1,
+    "figure.titlesize":    TITLE_FONT,
+    "axes.titlepad":       6,
+})
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 # ╔══════════════════════════════════════════════════════════╗
 # ║                   USER SETTINGS                         ║
@@ -693,7 +713,7 @@ def plot_partial_regression(pr_df: pd.DataFrame,
             ax.annotate(str(idx),
                         xy=(ex[idx], ey[idx]),
                         xytext=(4, 4), textcoords="offset points",
-                        fontsize=7, color="dimgrey")
+                        fontsize=BASE_FONT-4, color="dimgrey")
 
         # ── annotation box ────────────────────────────────────
         sig_str = ("***" if p_val < 0.001 else
@@ -704,16 +724,16 @@ def plot_partial_regression(pr_df: pd.DataFrame,
                f"t = {t_val:.2f},  p = {p_val:.4f}  {sig_str}")
         ax.text(0.03, 0.97, ann,
                 transform=ax.transAxes,
-                va="top", ha="left", fontsize=8,
+                va="top", ha="left", fontsize=BASE_FONT-3,
                 bbox=dict(boxstyle="round,pad=0.3",
                           facecolor="white", alpha=0.75, edgecolor="lightgrey"))
 
         # ── labels ────────────────────────────────────────────
         ax.set_xlabel(f"ê({p_lbl})\n[residuals after removing all other predictors]",
-                      fontsize=8)
+                      fontsize=BASE_FONT-3)
         ax.set_ylabel(f"ê({h_lbl})\n[residuals after removing all other predictors]",
-                      fontsize=8)
-        ax.set_title(p_lbl, fontsize=10, fontweight="bold")
+                      fontsize=BASE_FONT-3)
+        ax.set_title(p_lbl, fontsize=TITLE_FONT, fontweight="bold")
 
     # hide unused panels
     for j in range(n_pred, len(axes)):
@@ -723,7 +743,7 @@ def plot_partial_regression(pr_df: pd.DataFrame,
         f"{sp_pretty} – {h_lbl}\n"
         f"Added-variable (partial regression) plots  [OLS-based]\n"
         f"Slope = OLS β;  Partial R² = unique variance explained by each predictor",
-        fontsize=10
+        fontsize=TITLE_FONT
     )
     fig.savefig(outpath, dpi=FIG_DPI)
     plt.close(fig)
@@ -767,18 +787,18 @@ def plot_partial_r2_heatmap(pr_all: pd.DataFrame, outpath: Path) -> None:
             v = mat[i, j]
             if np.isfinite(v):
                 ax.text(j, i, f"{v:.3f}",
-                        ha="center", va="center", fontsize=9,
+                        ha="center", va="center", fontsize=BASE_FONT-2,
                         color="white" if v > np.nanmax(mat) * 0.6 else "black")
 
     ax.set_xticks(range(len(health_codes)))
-    ax.set_xticklabels(health_codes, rotation=35, ha="right", fontsize=9)
+    ax.set_xticklabels(health_codes, rotation=35, ha="right", fontsize=BASE_FONT-1)
     ax.set_yticks(range(len(pred_codes)))
-    ax.set_yticklabels(pred_labels, fontsize=9)
+    ax.set_yticklabels(pred_labels, fontsize=BASE_FONT-1)
     plt.colorbar(im, ax=ax, label="Mean partial R²  (averaged across species)")
     ax.set_title(
         "Partial R² per predictor × health metric\n"
         "(mean across species; unique variance explained after partialling out all others)",
-        fontsize=10
+        fontsize=TITLE_FONT
     )
     plt.tight_layout()
     fig.savefig(outpath, dpi=FIG_DPI)
@@ -839,15 +859,14 @@ def plot_partial_vs_dominance(pr_all: pd.DataFrame,
             color="grey", lw=1.0, ls="--", zorder=1,
             label="y = x  (unique = total)")
 
-    ax.set_xlabel("Dominance weight  (unique + shared R²)", fontsize=10)
-    ax.set_ylabel("Partial R²  (unique R² only)", fontsize=10)
+    ax.set_xlabel("Dominance weight  (unique + shared R²)", fontsize=BASE_FONT)
+    ax.set_ylabel("Partial R²  (unique R² only)", fontsize=BASE_FONT)
     ax.set_title(
         "Partial R² vs dominance weight\n"
         "Points below diagonal: dominance weight inflated by shared variance\n"
-        "Points on diagonal: predictor contributes mostly uniquely",
-        fontsize=10
+        "Points on diagonal: predictor contributes mostly uniquely", fontsize=TITLE_FONT
     )
-    ax.legend(fontsize=9, framealpha=0.8)
+    ax.legend(fontsize=BASE_FONT-1, framealpha=0.8)
     ax.set_xlim(left=0); ax.set_ylim(bottom=0)
     plt.tight_layout()
     fig.savefig(outpath, dpi=FIG_DPI)
@@ -874,12 +893,12 @@ def plot_scatterplots(df, health, predictors, sp_pretty, outpath):
             xf = np.linspace(xm.min(), xm.max(), 200)
             ax.plot(xf, intercept + slope*xf, color="firebrick", lw=1.6)
             sig = "***" if pv<.001 else "**" if pv<.01 else "*" if pv<.05 else "ns"
-            ax.set_title(f"r={r:.3f}  {sig}", fontsize=9)
-        ax.set_xlabel(PREDICTOR_LABELS.get(pred, pred), fontsize=9)
-        ax.set_ylabel(h_label, fontsize=9)
+            ax.set_title(f"r={r:.3f}  {sig}", fontsize=TITLE_FONT)
+        ax.set_xlabel(PREDICTOR_LABELS.get(pred, pred), fontsize=BASE_FONT)
+        ax.set_ylabel(h_label, fontsize=BASE_FONT)
     for j in range(len(predictors), len(axes)):
         axes[j].set_visible(False)
-    fig.suptitle(f"{sp_pretty} – {h_label}\nScatterplots: predictors vs outcome", fontsize=11)
+    fig.suptitle(f"{sp_pretty} – {h_label}\nScatterplots: predictors vs outcome", fontsize=TITLE_FONT)
     plt.tight_layout(); fig.savefig(outpath, dpi=FIG_DPI); plt.close(fig)
 
 
@@ -913,8 +932,7 @@ def plot_residual_diagnostics(resid, fitted, model_label, sp_pretty, health, out
 
     note = ("Note: residuals are TRANSFORMED (I−λW)e for SEM"
             if model_label == "SEM" else "")
-    fig.suptitle(f"{sp_pretty} – {h_label}  [{model_label}]\nResidual diagnostics\n{note}",
-                 fontsize=10)
+    fig.suptitle(f"{sp_pretty} – {h_label}  [{model_label}]\nResidual diagnostics\n{note}", fontsize=TITLE_FONT)
     plt.tight_layout(); fig.savefig(outpath, dpi=FIG_DPI); plt.close(fig)
     return {"shapiro_W": sw_stat, "shapiro_p": sw_p}
 
@@ -928,7 +946,7 @@ def plot_vif(vif_df, health, sp_pretty, outpath):
     ax.axvline(10, color="firebrick",  ls="--", lw=1.2, label="VIF=10")
     ax.set(xlabel="Variance Inflation Factor",
            title=f"{sp_pretty} – {HEALTH_LABELS.get(health,health)}\nVIF (OLS)")
-    ax.legend(fontsize=8)
+    ax.legend(fontsize=BASE_FONT-1)
     plt.tight_layout(); fig.savefig(outpath, dpi=FIG_DPI); plt.close(fig)
 
 
@@ -976,11 +994,11 @@ def plot_coefficients_comparison(col_names, ols_full, sem, slm,
                     fmt="none", color="black", capsize=3, lw=1.0)
 
     ax.axvline(0, color="black", lw=0.9, ls="--")
-    ax.set_yticks(y_pos); ax.set_yticklabels(labels, fontsize=9)
+    ax.set_yticks(y_pos); ax.set_yticklabels(labels, fontsize=BASE_FONT-1)
     ax.set_xlabel("Coefficient (± 1.96 SE)")
     ax.set_title(f"{sp_pretty} – {HEALTH_LABELS.get(health,health)}\n"
                  f"OLS vs SEM vs SLM coefficients")
-    ax.legend(fontsize=9, loc="lower right")
+    ax.legend(fontsize=BASE_FONT-1, loc="lower right")
     plt.tight_layout(); fig.savefig(outpath, dpi=FIG_DPI); plt.close(fig)
 
 
@@ -999,7 +1017,7 @@ def plot_moran_comparison(moran_ols, moran_sem, moran_slm,
     for bar, s, v in zip(bars, sig, vals):
         ax.text(bar.get_x() + bar.get_width()/2,
                 (bar.get_height() if v >= 0 else 0) + 0.005,
-                s, ha="center", fontsize=14, color="black")
+                s, ha="center", fontsize=BASE_FONT+2, color="black")
     ax.axhline(0, color="black", lw=0.8, ls="--")
     ax.set_ylabel("Moran's I on residuals")
     ax.set_title(f"{sp_pretty} – {HEALTH_LABELS.get(health,health)}\n"
@@ -1037,7 +1055,7 @@ def plot_aic_comparison(ols_aic, sem_aic, slm_aic, health, sp_pretty, outpath):
             ax.text(bar.get_x() + bar.get_width() / 2,
                     v + y_max * 0.02,
                     f"{v:.0f}",
-                    ha="center", va="bottom", fontsize=9)
+                    ha="center", va="bottom", fontsize=BASE_FONT-2)
 
     ax.axhline(0, color="black", lw=1.0, ls="--")
     ax.set_ylim(bottom=0)
@@ -1056,7 +1074,7 @@ def plot_aic_comparison(ols_aic, sem_aic, slm_aic, health, sp_pretty, outpath):
         ax.text(0.98, 0.97,
                 f"Best: {models[best_idx]}  (|ΔAIC|={best_val:.0f}, {strength})",
                 transform=ax.transAxes, ha="right", va="top",
-                fontsize=8, color="dimgrey")
+                fontsize=BASE_FONT-3, color="dimgrey")
 
     plt.tight_layout()
     fig.savefig(outpath, dpi=FIG_DPI)
@@ -1073,14 +1091,14 @@ def plot_dominance(da_df, health, sp_pretty, outpath):
         if row["dominance_weight"] > 0.005:
             ax.text(left + row["dominance_weight"]/2, 0,
                     f"{row['pct_of_r2']:.1f}%",
-                    ha="center", va="center", fontsize=8,
+                    ha="center", va="center", fontsize=BASE_FONT-2,
                     color="white", fontweight="bold")
         left += row["dominance_weight"]
     ax.set_xlim(0, max(left * 1.02, 0.01)); ax.set_yticks([])
     ax.set_xlabel("Dominance weight (avg additional R²)")
     ax.set_title(f"{sp_pretty} – {HEALTH_LABELS.get(health,health)}\n"
                  f"Dominance analysis [OLS-based]  (total R² from predictors = {left:.3f})")
-    ax.legend(loc="lower right", fontsize=8, framealpha=0.7)
+    ax.legend(loc="lower right", fontsize=BASE_FONT-1, framealpha=0.7)
     ax2 = axes[1]
     cols = [DA_COLOURS[i % len(DA_COLOURS)] for i in range(len(da_df))]
     ax2.barh(da_df["predictor"], da_df["dominance_weight"], color=cols)
@@ -1099,14 +1117,14 @@ def plot_combined_r2(summary_df, outpath):
     fig, ax = plt.subplots(figsize=(10, 0.8+0.6*len(piv)))
     im = ax.imshow(piv.values, aspect="auto", cmap="YlOrRd", vmin=0, vmax=1)
     ax.set_xticks(range(len(piv.columns)))
-    ax.set_xticklabels(piv.columns, rotation=35, ha="right", fontsize=9)
+    ax.set_xticklabels(piv.columns, rotation=35, ha="right", fontsize=BASE_FONT-1)
     ax.set_yticks(range(len(piv.index)))
-    ax.set_yticklabels(piv.index, fontsize=9)
+    ax.set_yticklabels(piv.index, fontsize=BASE_FONT-1)
     for i in range(piv.shape[0]):
         for j in range(piv.shape[1]):
             v = piv.iloc[i,j]
             if np.isfinite(v):
-                ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=8,
+                ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=BASE_FONT-2,
                         color="white" if v>0.6 else "black")
     plt.colorbar(im, ax=ax, label="Adj. R² (OLS)")
     ax.set_title("Adjusted R² (OLS) per species × health metric")
@@ -1149,17 +1167,16 @@ def plot_combined_aic(summary_df, outpath):
         ax.set_ylim(bottom=0)
         ax.set_xticks(x)
         ax.set_xticklabels(sub["species"].values, rotation=40,
-                           ha="right", fontsize=7)
-        ax.set_title(hm, fontsize=9)
-        ax.set_ylabel("|ΔAIC| vs OLS", fontsize=8)
+                           ha="right", fontsize=BASE_FONT-1)
+        ax.set_title(hm, fontsize=TITLE_FONT)
+        ax.set_ylabel("|ΔAIC| vs OLS", fontsize=BASE_FONT)
 
         if ax is axes[0]:
-            ax.legend(fontsize=8)
+            ax.legend(fontsize=BASE_FONT-1)
 
     fig.suptitle(
         "|ΔAIC| vs OLS: SEM and SLM per species × health metric\n"
-        "Taller bar = larger improvement over OLS  |  bold outline = best spatial model",
-        fontsize=10
+        "Taller bar = larger improvement over OLS  |  bold outline = best spatial model", fontsize=TITLE_FONT
     )
     plt.tight_layout()
     fig.savefig(outpath, dpi=FIG_DPI)
@@ -1201,21 +1218,21 @@ def plot_delta_aic_summary(summary_df, outpath):
                 ax.text(j, i,
                         f"{float(val):.0f}\n{winner}",
                         ha="center", va="center",
-                        fontsize=8, color=txt_color,
+                        fontsize=BASE_FONT-2, color=txt_color,
                         fontweight="bold")
 
     ax.set_xticks(range(len(health_list)))
-    ax.set_xticklabels(health_list, rotation=30, ha="right", fontsize=9)
+    ax.set_xticklabels(health_list, rotation=30, ha="right", fontsize=BASE_FONT-1)
     ax.set_yticks(range(len(species_list)))
-    ax.set_yticklabels(species_list, fontsize=9)
+    ax.set_yticklabels(species_list, fontsize=BASE_FONT-1)
 
     cbar = plt.colorbar(im, ax=ax, pad=0.02)
-    cbar.set_label("|ΔAIC| vs OLS  (colour capped at 95th percentile)", fontsize=8)
+    cbar.set_label("|ΔAIC| vs OLS  (colour capped at 95th percentile)", fontsize=BASE_FONT)
 
     ax.set_title(
         "Spatial model improvement over OLS\n"
         "|ΔAIC| with winning model (SEM / SLM) per species × health metric",
-        fontsize=11
+        fontsize=TITLE_FONT
     )
     plt.tight_layout()
     fig.savefig(outpath, dpi=FIG_DPI)
@@ -1243,14 +1260,14 @@ def plot_combined_moran(summary_df, outpath):
             ax.scatter(sub[i_col].values, yp, c=sig_c, s=60,
                        marker=markers[model], label=model, zorder=3, alpha=0.9)
         ax.axvline(0, color="grey", lw=0.8, ls="--")
-        ax.set_xlabel("Moran's I", fontsize=8); ax.set_title(hm, fontsize=8)
+        ax.set_xlabel("Moran's I", fontsize=BASE_FONT); ax.set_title(hm, fontsize=TITLE_FONT)
         ax.set_yticks(list(y_ticks.values()))
-        ax.set_yticklabels(list(y_ticks.keys()), fontsize=8)
-        if ax is axes[0]: ax.legend(fontsize=7)
+        ax.set_yticklabels(list(y_ticks.keys()), fontsize=BASE_FONT-1)
+        if ax is axes[0]: ax.legend(fontsize=BASE_FONT-1)
 
     fig.suptitle("Moran's I on residuals: OLS vs SEM vs SLM\n"
                  "(coloured=significant, grey=n.s.  |  SEM uses transformed residuals)",
-                 fontsize=10)
+                 fontsize=TITLE_FONT)
     plt.tight_layout(); fig.savefig(outpath, dpi=FIG_DPI); plt.close(fig)
 
 
@@ -1270,11 +1287,478 @@ def plot_combined_dominance_stacked(da_all, outpath):
                color=DA_COLOURS[pi % len(DA_COLOURS)], label=pred)
         bottoms += vals
     ax.set_xticks(x)
-    ax.set_xticklabels(health_list, rotation=30, ha="right", fontsize=9)
+    ax.set_xticklabels(health_list, rotation=30, ha="right", fontsize=BASE_FONT-1)
     ax.set_ylabel("Avg dominance weight (R²)  [OLS-based]")
     ax.set_title("Dominance analysis – average R² partition across species")
-    ax.legend(loc="upper right", fontsize=8, framealpha=0.8)
+    ax.legend(loc="upper right", fontsize=BASE_FONT-1, framealpha=0.8)
     plt.tight_layout(); fig.savefig(outpath, dpi=FIG_DPI); plt.close(fig)
+
+
+# ╔══════════════════════════════════════════════════════════╗
+# ║           APPENDIX FIGURES                              ║
+# ╚══════════════════════════════════════════════════════════╝
+
+def plot_appendix_coef_forest(summary_df: pd.DataFrame, outpath: Path) -> None:
+    """
+    Figure A1 — Coefficient forest plot (SEM) across species.
+
+    One subplot per health metric (rows) × predictor (columns).
+    Each panel shows the SEM coefficient ± 1.96 SE for every species,
+    with a vertical zero line.  Points are coloured by significance
+    (OLS p < ALPHA: filled; non-significant: open circle).
+
+    This is the primary figure showing direction, magnitude, and
+    cross-species consistency of each predictor effect.
+    """
+    health_list = [HEALTH_LABELS.get(h, h) for h in HEALTH_VARS]
+    pred_list   = list(PREDICTOR_LABELS.values())
+    species_list = list(summary_df["species"].unique())
+    n_hm   = len(health_list)
+    n_pred = len(pred_list)
+
+    fig, axes = plt.subplots(
+        n_pred, n_hm,
+        figsize=(3.5 * n_hm, 2.8 * n_pred),
+        squeeze=False
+    )
+
+    y_pos = np.arange(len(species_list))
+
+    for pi, pred_lbl in enumerate(pred_list):
+        for hi, hm in enumerate(health_list):
+            ax  = axes[pi][hi]
+            sub = summary_df[
+                (summary_df["health_metric"] == hm) &
+                (summary_df["predictor"]     == pred_lbl)
+            ].copy()
+
+            # align to species_list order
+            sub = sub.set_index("species").reindex(species_list).reset_index()
+
+            coefs = sub["coef_SEM"].values.astype(float)
+            ses   = sub["se_SEM"].values.astype(float)
+            sigs  = sub["sig_OLS"].values
+
+            for yi, (c, se, sig) in enumerate(zip(coefs, ses, sigs)):
+                if not np.isfinite(c):
+                    continue
+                color  = "#4C72B0" if sig else "#aaaaaa"
+                marker = "o"       if sig else "o"
+                mfc    = color     if sig else "white"
+                err    = 1.96 * se if np.isfinite(se) else 0
+                ax.errorbar(c, yi, xerr=err,
+                            fmt=marker, color=color, mfc=mfc,
+                            ms=6, capsize=3, lw=1.2, mew=1.2, zorder=3)
+
+            ax.axvline(0, color="grey", lw=0.8, ls="--", zorder=1)
+            ax.set_yticks(y_pos)
+            ax.set_yticklabels(
+                species_list if hi == 0 else [""] * len(species_list),
+                fontsize=BASE_FONT - 2, style="italic"
+            )
+            ax.tick_params(axis="x", labelsize=BASE_FONT - 2)
+
+            if pi == 0:
+                ax.set_title(hm, fontsize=TITLE_FONT, pad=6)
+            if hi == n_hm - 1:
+                ax.set_ylabel(pred_lbl, fontsize=BASE_FONT - 1,
+                              rotation=270, labelpad=14, va="bottom")
+                ax.yaxis.set_label_position("right")
+
+    # shared legend
+    from matplotlib.lines import Line2D
+    handles = [
+        Line2D([0],[0], marker="o", color="#4C72B0", mfc="#4C72B0",
+               ls="none", ms=7, label=f"p < {ALPHA}"),
+        Line2D([0],[0], marker="o", color="#aaaaaa", mfc="white",
+               ls="none", ms=7, mew=1.2, label="n.s."),
+    ]
+    fig.legend(handles=handles, loc="lower center", ncol=2,
+               fontsize=BASE_FONT - 1, framealpha=0.8,
+               bbox_to_anchor=(0.5, -0.01))
+
+    fig.suptitle(
+        "SEM coefficients (± 95 % CI) per predictor × health metric × species\n"
+        "Filled = significant (OLS p < 0.05)  |  Open = non-significant",
+        fontsize=TITLE_FONT
+    )
+    plt.tight_layout(rect=[0, 0.03, 1, 1])
+    fig.savefig(outpath, dpi=FIG_DPI, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_appendix_peak_ndvi_scatter(raw_df: pd.DataFrame, outpath: Path) -> None:
+    """
+    Figure A2 — Combined peak NDVI × impervious surface scatterplots.
+
+    One panel per species.  Shows raw data, OLS regression line,
+    95 % confidence band, Pearson r, and p-value.
+    Grounds the modelling results in the raw relationship.
+    """
+    species_list = list(raw_df["species"].unique())
+    n  = len(species_list)
+    nc = min(3, n)
+    nr = int(np.ceil(n / nc))
+
+    fig, axes = plt.subplots(nr, nc,
+                              figsize=(5.5 * nc, 4.5 * nr),
+                              constrained_layout=True)
+    axes = np.array(axes).flatten()
+
+    for i, sp in enumerate(species_list):
+        ax  = axes[i]
+        sub = raw_df[raw_df["species"] == sp].dropna(
+            subset=["imperv_100m", "ndvi_peak"])
+        x = sub["imperv_100m"].values.astype(float)
+        y = sub["ndvi_peak"].values.astype(float)
+
+        ax.scatter(x, y, s=12, alpha=0.25, color="#4C72B0",
+                   linewidths=0, zorder=2)
+
+        if len(x) > 2:
+            slope, intercept, r, pv, _ = stats.linregress(x, y)
+            xr = np.linspace(x.min(), x.max(), 300)
+
+            # CI band via OLS prediction
+            Xc      = sm.add_constant(x, has_constant="add")
+            fit     = sm.OLS(y, Xc).fit()
+            xr_c    = sm.add_constant(xr, has_constant="add")
+            pred_ci = fit.get_prediction(xr_c).summary_frame(alpha=ALPHA)
+
+            ax.plot(xr, pred_ci["mean"], color="firebrick", lw=1.8, zorder=3)
+            ax.fill_between(xr,
+                            pred_ci["mean_ci_lower"],
+                            pred_ci["mean_ci_upper"],
+                            color="firebrick", alpha=0.12, zorder=1)
+
+            sig = ("***" if pv < 0.001 else "**" if pv < 0.01
+                   else "*" if pv < 0.05 else "ns")
+            ax.text(0.97, 0.97,
+                    f"r = {r:.3f}  {sig}\nn = {len(x)}",
+                    transform=ax.transAxes, ha="right", va="top",
+                    fontsize=BASE_FONT - 1,
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                              alpha=0.8, edgecolor="lightgrey"))
+
+        ax.set_xlabel("Impervious surface (100 m)  [%]",
+                      fontsize=BASE_FONT)
+        ax.set_ylabel("Peak NDVI", fontsize=BASE_FONT)
+        ax.set_title(sp, fontsize=TITLE_FONT, style="italic")
+
+    for j in range(i + 1, len(axes)):
+        axes[j].set_visible(False)
+
+    fig.suptitle(
+        "Peak NDVI vs impervious surface cover per species\n"
+        "Shaded band = 95 % confidence interval of the fitted line",
+        fontsize=TITLE_FONT
+    )
+    fig.savefig(outpath, dpi=FIG_DPI)
+    plt.close(fig)
+
+
+def plot_appendix_sos_scatter(raw_df: pd.DataFrame, outpath: Path) -> None:
+    """
+    Figure A3 — Start of season × impervious surface scatterplots.
+
+    Same layout as A2 but for start of season (DOY).
+    Makes the counterintuitive positive association (more impervious =
+    later season onset) visible in the raw data.
+    """
+    species_list = list(raw_df["species"].unique())
+    n  = len(species_list)
+    nc = min(3, n)
+    nr = int(np.ceil(n / nc))
+
+    fig, axes = plt.subplots(nr, nc,
+                              figsize=(5.5 * nc, 4.5 * nr),
+                              constrained_layout=True)
+    axes = np.array(axes).flatten()
+
+    for i, sp in enumerate(species_list):
+        ax  = axes[i]
+        sub = raw_df[raw_df["species"] == sp].dropna(
+            subset=["imperv_100m", "sos_doy"])
+        x = sub["imperv_100m"].values.astype(float)
+        y = sub["sos_doy"].values.astype(float)
+
+        ax.scatter(x, y, s=12, alpha=0.25, color="#DD8452",
+                   linewidths=0, zorder=2)
+
+        if len(x) > 2:
+            slope, intercept, r, pv, _ = stats.linregress(x, y)
+            xr  = np.linspace(x.min(), x.max(), 300)
+            Xc  = sm.add_constant(x, has_constant="add")
+            fit = sm.OLS(y, Xc).fit()
+            xr_c    = sm.add_constant(xr, has_constant="add")
+            pred_ci = fit.get_prediction(xr_c).summary_frame(alpha=ALPHA)
+
+            ax.plot(xr, pred_ci["mean"], color="firebrick", lw=1.8, zorder=3)
+            ax.fill_between(xr,
+                            pred_ci["mean_ci_lower"],
+                            pred_ci["mean_ci_upper"],
+                            color="firebrick", alpha=0.12, zorder=1)
+
+            sig = ("***" if pv < 0.001 else "**" if pv < 0.01
+                   else "*" if pv < 0.05 else "ns")
+            ax.text(0.97, 0.97,
+                    f"r = {r:.3f}  {sig}\nn = {len(x)}",
+                    transform=ax.transAxes, ha="right", va="top",
+                    fontsize=BASE_FONT - 1,
+                    bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                              alpha=0.8, edgecolor="lightgrey"))
+
+        ax.set_xlabel("Impervious surface (100 m)  [%]",
+                      fontsize=BASE_FONT)
+        ax.set_ylabel("Start of season (DOY)", fontsize=BASE_FONT)
+        ax.set_title(sp, fontsize=TITLE_FONT, style="italic")
+
+    for j in range(i + 1, len(axes)):
+        axes[j].set_visible(False)
+
+    fig.suptitle(
+        "Start of season (DOY) vs impervious surface cover per species\n"
+        "Positive slope = later season onset in more urbanised environments",
+        fontsize=TITLE_FONT
+    )
+    fig.savefig(outpath, dpi=FIG_DPI)
+    plt.close(fig)
+
+
+def plot_appendix_coef_heatmap(summary_df: pd.DataFrame, outpath: Path) -> None:
+    """
+    Figure A4 — SEM coefficient sign-and-significance heatmap.
+
+    Rows = predictors, columns = health metrics, cells split by species.
+    Each cell shows a coloured square per species:
+      dark blue  = significant negative
+      dark red   = significant positive
+      light grey = non-significant
+    Gives a compact overview of direction and consistency across the
+    full predictor × metric × species space.
+    """
+    species_list = list(summary_df["species"].unique())
+    pred_list    = list(PREDICTOR_LABELS.values())
+    health_list  = [HEALTH_LABELS.get(h, h) for h in HEALTH_VARS]
+
+    n_pred = len(pred_list)
+    n_hm   = len(health_list)
+    n_sp   = len(species_list)
+
+    # grid: n_pred rows × n_hm cols, each cell n_sp small squares
+    sq = 0.28          # size of each species square (in data units)
+    gap = 0.06
+    cell_w = n_sp * (sq + gap)
+
+    fig, ax = plt.subplots(
+        figsize=(cell_w * n_hm + 1.5, 0.9 * n_pred + 1.0))
+
+    for pi, pred_lbl in enumerate(pred_list):
+        for hi, hm in enumerate(health_list):
+            for si, sp in enumerate(species_list):
+                sub = summary_df[
+                    (summary_df["health_metric"] == hm) &
+                    (summary_df["predictor"]     == pred_lbl) &
+                    (summary_df["species"]        == sp)
+                ]
+                if sub.empty:
+                    continue
+                row  = sub.iloc[0]
+                coef = row["coef_SEM"]
+                sig  = row["sig_OLS"]
+
+                if not np.isfinite(coef):
+                    color = "#eeeeee"
+                elif not sig:
+                    color = "#cccccc"
+                elif coef < 0:
+                    color = "#1a6faf"   # significant negative → blue
+                else:
+                    color = "#b2182b"   # significant positive → red
+
+                x0 = hi * (cell_w + 0.4) + si * (sq + gap)
+                y0 = pi
+                rect = plt.Rectangle((x0, y0), sq, sq * 0.85,
+                                     color=color, zorder=2)
+                ax.add_patch(rect)
+
+    # axis labels
+    xtick_pos = [hi * (cell_w + 0.4) + (n_sp * (sq + gap)) / 2
+                 for hi in range(n_hm)]
+    ax.set_xticks(xtick_pos)
+    ax.set_xticklabels(health_list, rotation=35, ha="right",
+                       fontsize=BASE_FONT - 1)
+
+    ax.set_yticks(np.arange(n_pred) + 0.4)
+    ax.set_yticklabels(pred_list, fontsize=BASE_FONT - 1)
+
+    ax.set_xlim(-0.3, n_hm * (cell_w + 0.4))
+    ax.set_ylim(-0.2, n_pred + 0.2)
+    ax.set_aspect("auto")
+    ax.invert_yaxis()
+
+    # species mini-legend below first column
+    for si, sp in enumerate(species_list):
+        x0 = si * (sq + gap)
+        ax.text(x0 + sq / 2, n_pred + 0.05,
+                sp.split(" ")[0][0] + "." + sp.split(" ")[-1][:4],
+                ha="center", va="top", fontsize=BASE_FONT - 4,
+                style="italic", rotation=40)
+
+    # colour legend
+    from matplotlib.patches import Patch
+    legend_els = [
+        Patch(color="#1a6faf", label="Significant negative"),
+        Patch(color="#b2182b", label="Significant positive"),
+        Patch(color="#cccccc", label="Non-significant"),
+    ]
+    ax.legend(handles=legend_els, loc="upper right",
+              fontsize=BASE_FONT - 1, framealpha=0.9,
+              bbox_to_anchor=(1.0, -0.18), ncol=3)
+
+    ax.set_title(
+        "Direction and significance of SEM coefficients\n"
+        "per predictor × health metric × species\n"
+        "(each small square = one species, left to right as in legend)",
+        fontsize=TITLE_FONT
+    )
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=FIG_DPI, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_appendix_partial_r2_decomposition(
+        pr_all: pd.DataFrame,
+        da_all: pd.DataFrame,
+        outpath: Path) -> None:
+    """
+    Figure A5 — Partial R² decomposition: unique vs shared variance per predictor.
+
+    Layout: one row per predictor, one column per health metric.
+    Each panel is a dot-and-bar plot with one row per species showing:
+      ■ dark filled bar  = partial R² (unique variance only)
+      □ light bar extension = shared variance (dominance weight − partial R²)
+    The total bar length = dominance weight.
+
+    A vertical dashed line at x=0 and a subtle grey band mark the
+    "negligible unique contribution" zone (partial R² < 0.01).
+
+    This directly supports statements of the form:
+      "impervious surface retains X% of its dominance weight as unique variance,
+       whereas LST's dominance weight is almost entirely shared with other predictors."
+
+    The label_to_code mapping uses PREDICTOR_LABELS to align the two DataFrames.
+    """
+    label_to_code = {v: k for k, v in PREDICTOR_LABELS.items()}
+
+    # Merge partial R² and dominance weights on species × health × predictor_code
+    pr_m  = pr_all.rename(columns={"predictor_code": "pred_code"})[
+        ["species", "health_metric", "pred_code", "partial_r2"]].copy()
+
+    da_m  = da_all.copy()
+    da_m["pred_code"] = da_m["predictor"].map(label_to_code)
+    da_m  = da_m[["species", "health_metric", "pred_code",
+                   "dominance_weight"]].copy()
+
+    merged = pr_m.merge(da_m, on=["species", "health_metric", "pred_code"],
+                        how="inner")
+    merged["shared"] = (merged["dominance_weight"] - merged["partial_r2"]
+                        ).clip(lower=0)
+
+    pred_codes   = PREDICTORS
+    pred_labels  = [PREDICTOR_LABELS.get(p, p) for p in pred_codes]
+    health_list  = [HEALTH_LABELS.get(h, h) for h in HEALTH_VARS]
+    species_list = list(merged["species"].unique())
+    n_sp   = len(species_list)
+    n_pred = len(pred_codes)
+    n_hm   = len(health_list)
+
+    fig, axes = plt.subplots(
+        n_pred, n_hm,
+        figsize=(3.6 * n_hm, 2.4 * n_pred),
+        squeeze=False,
+        constrained_layout=True
+    )
+
+    UNIQUE_COL = "#1a6faf"   # dark blue  — unique variance
+    SHARED_COL = "#aec7e8"   # light blue — shared variance
+    INSIG_BAND = 0.01        # grey zone threshold
+
+    y_pos = np.arange(n_sp)
+
+    for pi, (pc, pl) in enumerate(zip(pred_codes, pred_labels)):
+        for hi, hm in enumerate(health_list):
+            ax = axes[pi][hi]
+
+            sub = merged[
+                (merged["pred_code"]     == pc) &
+                (merged["health_metric"] == hm)
+            ].copy()
+            sub = sub.set_index("species").reindex(species_list).reset_index()
+
+            unique = sub["partial_r2"].values.astype(float)
+            shared = sub["shared"].values.astype(float)
+
+            # shared bar (full dominance width, light)
+            ax.barh(y_pos, unique + shared, height=0.55,
+                    color=SHARED_COL, alpha=0.85, zorder=2,
+                    label="Shared" if (pi == 0 and hi == 0) else "_")
+            # unique bar on top (dark)
+            ax.barh(y_pos, unique, height=0.55,
+                    color=UNIQUE_COL, alpha=0.95, zorder=3,
+                    label="Unique (partial R²)" if (pi == 0 and hi == 0) else "_")
+
+            # negligible-unique zone
+            ax.axvspan(0, INSIG_BAND, color="grey", alpha=0.07, zorder=1)
+            ax.axvline(0, color="grey", lw=0.6, ls="--", zorder=1)
+
+            # value label on the unique portion if large enough
+            for yi, uv in enumerate(unique):
+                if np.isfinite(uv) and uv > 0.015:
+                    ax.text(uv + 0.002, yi, f"{uv:.2f}",
+                            va="center", fontsize=BASE_FONT - 4,
+                            color=UNIQUE_COL)
+
+            ax.set_yticks(y_pos)
+            sp_short = [s.split()[0][0] + ". " + " ".join(s.split()[1:])
+                        for s in species_list]
+            ax.set_yticklabels(
+                sp_short if hi == 0 else [""] * n_sp,
+                fontsize=BASE_FONT - 3, style="italic"
+            )
+            ax.tick_params(axis="x", labelsize=BASE_FONT - 3)
+            ax.set_xlim(left=0)
+
+            if pi == 0:
+                ax.set_title(hm, fontsize=TITLE_FONT - 1, pad=4)
+            if hi == n_hm - 1:
+                ax.set_ylabel(pl, fontsize=BASE_FONT - 1,
+                              rotation=270, labelpad=14, va="bottom")
+                ax.yaxis.set_label_position("right")
+            if pi == n_pred - 1:
+                ax.set_xlabel("R²", fontsize=BASE_FONT - 2)
+
+    # shared legend
+    from matplotlib.patches import Patch
+    legend_els = [
+        Patch(color=UNIQUE_COL, alpha=0.95,
+              label="Partial R²  (unique variance, after partialling out all others)"),
+        Patch(color=SHARED_COL, alpha=0.85,
+              label="Shared variance  (dominance weight − partial R²)"),
+    ]
+    fig.legend(handles=legend_els, loc="lower center", ncol=2,
+               fontsize=BASE_FONT - 1, framealpha=0.9,
+               bbox_to_anchor=(0.5, -0.03))
+
+    fig.suptitle(
+        "Unique vs shared R² per predictor × health metric × species\n"
+        "Dark = partial R² (unique only)  |  "
+        "Light extension = variance shared with other predictors  |  "
+        "Total bar = dominance weight",
+        fontsize=TITLE_FONT
+    )
+    fig.savefig(outpath, dpi=FIG_DPI, bbox_inches="tight")
+    plt.close(fig)
 
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -1452,12 +1936,12 @@ def plot_dag_sensitivity(dag_results: list,
 
     ax_coef.axhline(0, color="grey", lw=0.8, ls=":")
     ax_coef.set_xticks(x)
-    ax_coef.set_xticklabels(spec_labels, fontsize=8)
-    ax_coef.set_ylabel("Regression coefficient (± 95% CI)", fontsize=9)
+    ax_coef.set_xticklabels(spec_labels, fontsize=BASE_FONT-1)
+    ax_coef.set_ylabel("Regression coefficient (± 95% CI)", fontsize=BASE_FONT)
     ax_coef.set_title("Coefficient sensitivity across DAG specifications\n"
                        "Stable β_imperv (Spec2→1): direct effect  |  "
-                       "Large drop: LST mediates imperv", fontsize=8)
-    ax_coef.legend(fontsize=8, framealpha=0.8)
+                       "Large drop: LST mediates imperv", fontsize=TITLE_FONT)
+    ax_coef.legend(fontsize=BASE_FONT-1, framealpha=0.8)
 
     # Annotation: % change in imperv beta from Spec2 → Spec1
     spec_keys_list = [r["spec_key"] for r in dag_results]
@@ -1473,7 +1957,7 @@ def plot_dag_sensitivity(dag_results: list,
                 f"β_imperv Spec2→Spec1: {pct_change:+.1f}% {direction}\n"
                 f"({'consistent with mediation' if pct_change < -15 else 'direct effect likely'})",
                 transform=ax_coef.transAxes, ha="right", va="bottom",
-                fontsize=7.5, color="dimgrey",
+                fontsize=BASE_FONT-3, color="dimgrey",
                 bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
                           alpha=0.8, edgecolor="lightgrey")
             )
@@ -1487,17 +1971,16 @@ def plot_dag_sensitivity(dag_results: list,
         if np.isfinite(v):
             ax_r2.text(bar.get_x() + bar.get_width() / 2,
                        v + max(r2_vals) * 0.02,
-                       f"{v:.3f}", ha="center", va="bottom", fontsize=9)
+                       f"{v:.3f}", ha="center", va="bottom", fontsize=BASE_FONT-2)
     ax_r2.set_xticks(x)
-    ax_r2.set_xticklabels(spec_labels, fontsize=8)
-    ax_r2.set_ylabel("Adjusted R² (OLS)", fontsize=9)
+    ax_r2.set_xticklabels(spec_labels, fontsize=BASE_FONT-1)
+    ax_r2.set_ylabel("Adjusted R² (OLS)", fontsize=BASE_FONT)
     ax_r2.set_ylim(bottom=0)
     ax_r2.set_title("Model fit (adj. R²) per specification\n"
-                     "Thermal-only ≈ Full → imperv adds little beyond LST", fontsize=8)
+                     "Thermal-only ≈ Full → imperv adds little beyond LST", fontsize=TITLE_FONT)
 
     fig.suptitle(f"{sp_pretty} – {h_lbl}\n"
-                 f"DAG specification sensitivity analysis",
-                 fontsize=10)
+                 f"DAG specification sensitivity analysis", fontsize=TITLE_FONT)
     plt.tight_layout()
     fig.savefig(outpath, dpi=FIG_DPI)
     plt.close(fig)
@@ -1555,27 +2038,26 @@ def plot_combined_dag_coef(dag_all: pd.DataFrame, outpath: Path) -> None:
 
             ax.axhline(0, color="grey", lw=0.7, ls=":")
             ax.set_xticks(list(spec_x.values()))
-            ax.set_xticklabels([spec_labels[s] for s in spec_order], fontsize=6)
+            ax.set_xticklabels([spec_labels[s] for s in spec_order], fontsize=BASE_FONT-2)
             ax.tick_params(axis="y", labelsize=6)
 
             if ci == 0:
-                ax.set_ylabel(hm, fontsize=7, labelpad=2)
+                ax.set_ylabel(hm, fontsize=BASE_FONT-2, labelpad=2)
             if ri == 0:
-                ax.set_title(sp, fontsize=7)
+                ax.set_title(sp, fontsize=TITLE_FONT)
 
     # Global legend
     handles = [
         plt.Line2D([0], [0], marker="o", color="#4C72B0", ls="none", ms=6, label="OLS"),
         plt.Line2D([0], [0], marker="s", color="#DD8452", ls="none", ms=6, label="SEM"),
     ]
-    fig.legend(handles=handles, loc="lower center", ncol=2,
-               fontsize=8, framealpha=0.8, bbox_to_anchor=(0.5, -0.02))
+    fig.legend(handles=handles, loc="lower center", ncol=2, fontsize=BASE_FONT-1, framealpha=0.8, bbox_to_anchor=(0.5, -0.02))
 
     fig.suptitle(
         "Impervious surface coefficient (β) across DAG specifications\n"
         "Spec2 = total effect (urbanisation-only)  |  Spec1 = partial effect (full model)\n"
         "Large Spec2→Spec1 drop suggests LST/BC mediate part of the impervious effect",
-        fontsize=9
+        fontsize=TITLE_FONT
     )
     plt.tight_layout(rect=[0, 0.04, 1, 1])
     fig.savefig(outpath, dpi=FIG_DPI, bbox_inches="tight")
@@ -1617,21 +2099,20 @@ def plot_combined_dag_r2(dag_all: pd.DataFrame, outpath: Path) -> None:
                 v = piv.iloc[i, j]
                 if np.isfinite(float(v)):
                     ax.text(j, i, f"{float(v):.3f}",
-                            ha="center", va="center", fontsize=8,
+                            ha="center", va="center", fontsize=BASE_FONT-2,
                             color="white" if float(v) > vmax * 0.65 else "black")
 
         ax.set_xticks(range(len(health_list)))
-        ax.set_xticklabels(health_list, rotation=35, ha="right", fontsize=8)
+        ax.set_xticklabels(health_list, rotation=35, ha="right", fontsize=BASE_FONT-1)
         ax.set_yticks(range(len(species_list)))
-        ax.set_yticklabels(species_list, fontsize=8)
-        ax.set_title(spec_labels_map.get(spec_key, spec_key), fontsize=9)
+        ax.set_yticklabels(species_list, fontsize=BASE_FONT-1)
+        ax.set_title(spec_labels_map.get(spec_key, spec_key), fontsize=TITLE_FONT)
 
     plt.colorbar(im, ax=axes[-1], label="Adjusted R² (OLS)", shrink=0.8)
     fig.suptitle(
         "Adjusted R² per DAG specification × species × health metric\n"
         "Spec3 ≈ Spec1 → temperature alone captures most variance  |  "
-        "Spec2 ≈ Spec1 → impervious alone is sufficient",
-        fontsize=10
+        "Spec2 ≈ Spec1 → impervious alone is sufficient", fontsize=TITLE_FONT
     )
     plt.tight_layout()
     fig.savefig(outpath, dpi=FIG_DPI)
@@ -1941,7 +2422,7 @@ def run_all_models(df_sub, health, predictors, controls, sp_pretty, out_dir):
                 f.write(f"\n  Beta_imperv Spec2->Spec1: {pct:+.1f}%"
                         f"  ({'possible mediation' if pct < -15 else 'direct effect likely'})")
 
-    return rows, da_df.to_dict("records"), pr_export_rows, dag_results
+    return rows, da_df.to_dict("records"), pr_export_rows, dag_results, d.assign(species=sp_pretty)
 
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -1953,6 +2434,7 @@ def main():
     all_da   = []
     all_pr   = []   # partial regression rows for combined plots
     all_dag  = []   # DAG specification rows for combined plots
+    all_raw  = []   # raw filtered dataframes for appendix scatter plots
 
     for species, csv_path in SPECIES_CSVS.items():
         print(f"\n{'='*60}\n  {species}\n{'='*60}")
@@ -1989,13 +2471,15 @@ def main():
             print(f"  → {HEALTH_LABELS.get(health, health)}")
             h_out = sp_out / health
             ensure_dir(h_out)
-            rows, da_rows, pr_rows, dag_rows = run_all_models(
+            rows, da_rows, pr_rows, dag_rows, raw_d = run_all_models(
                 df, health, PREDICTORS, CONTROL_VARS, sp_pretty, h_out
             )
             sp_rows.extend(rows)
             sp_da.extend(da_rows)
             sp_pr.extend(pr_rows)
             sp_dag.extend(dag_rows)
+            if len(raw_d) > 0:
+                all_raw.append(raw_d)
 
         if not sp_rows:
             print("  [skip] No results produced."); continue
@@ -2053,6 +2537,39 @@ def main():
         all_dag_df.to_csv(OUT_ROOT / "ALL_dag_specs.csv", index=False)
         plot_combined_dag_coef(all_dag_df, OUT_ROOT / "ALL_dag_coef_sensitivity.png")
         plot_combined_dag_r2(all_dag_df, OUT_ROOT / "ALL_dag_r2_comparison.png")
+
+    # ── Appendix figures ──────────────────────────────────────
+    if all_rows:
+        all_df = pd.DataFrame(all_rows)
+
+        # A1: SEM coefficient forest plot (direction + significance per species)
+        plot_appendix_coef_forest(
+            all_df, OUT_ROOT / "APPENDIX_A1_coef_forest.png")
+
+        # A4: sign-and-significance heatmap (compact overview)
+        plot_appendix_coef_heatmap(
+            all_df, OUT_ROOT / "APPENDIX_A4_coef_heatmap.png")
+
+    if all_pr and all_da:
+        # A5: partial R² decomposition — unique vs shared variance
+        plot_appendix_partial_r2_decomposition(
+            pd.DataFrame(all_pr),
+            pd.DataFrame(all_da),
+            OUT_ROOT / "APPENDIX_A5_partial_r2_decomposition.png"
+        )
+
+    if all_raw:
+        # One row per tree — deduplicate so each tree appears once per species
+        raw_df = (pd.concat(all_raw, ignore_index=True)
+                  .drop_duplicates(subset=["species"] + COORD_COLS))
+
+        # A2: Peak NDVI × impervious surface scatterplots
+        plot_appendix_peak_ndvi_scatter(
+            raw_df, OUT_ROOT / "APPENDIX_A2_peak_ndvi_scatter.png")
+
+        # A3: Start of season × impervious surface scatterplots
+        plot_appendix_sos_scatter(
+            raw_df, OUT_ROOT / "APPENDIX_A3_sos_scatter.png")
 
     if all_rows or all_da or all_pr or all_dag:
         print(f"\n[ok] All outputs saved to: {OUT_ROOT}")
