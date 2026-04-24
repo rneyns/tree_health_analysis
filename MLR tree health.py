@@ -546,10 +546,19 @@ def plot_dominance(da_df: pd.DataFrame, health: str, sp_pretty: str,
 
 def plot_combined_r2(summary_df: pd.DataFrame, outpath: Path) -> None:
     """Heatmap of adjusted R² per species × health metric."""
+    HEALTH_ORDER = [
+        "Peak NDVI",
+        "Start of season (DOY)",
+        "Length of season (days)",
+        "NDVI amplitude",
+        "Seasonal NDVI integral",
+    ]
+
     piv = (summary_df
            .drop_duplicates(subset=["species", "health_metric"])
            [["species", "health_metric", "R2_adj"]]
-           .pivot(index="species", columns="health_metric", values="R2_adj"))
+           .pivot(index="species", columns="health_metric", values="R2_adj")
+           .reindex(columns=HEALTH_ORDER))
 
     fig, ax = plt.subplots(figsize=(10, 0.8 + 0.6 * len(piv)))
     im = ax.imshow(piv.values, aspect="auto", cmap="YlOrRd", vmin=0, vmax=1)
