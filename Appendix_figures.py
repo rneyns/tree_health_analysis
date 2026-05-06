@@ -167,10 +167,10 @@ HEALTH_LABELS = {
 }
 
 PREDICTOR_LABELS = {
-    "imperv_100m":        "Impervious surface (100 m)",
-    "poll_bc_anmean":     "Black carbon (annual mean)",
-    "lst_temp_r100_y":    "LST (100 m)",
-    "insolation9":        "Solar radiation (9×9)",
+    "imperv_100m":        "Impervious surface",
+    "poll_bc_anmean":     "Black carbon",
+    "lst_temp_r100_y":    "LST",
+    "insolation9":        "Solar radiation",
 }
 # Merge extra predictor labels into the lookup
 PREDICTOR_LABELS.update(EXTRA_PREDICTORS)
