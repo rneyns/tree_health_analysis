@@ -91,9 +91,9 @@ HEALTH_LABELS = {
 }
 
 PREDICTOR_LABELS = {
-    "imperv_100m":     "Impervious surface (100 m)",
-    "poll_bc_anmean":  "Black carbon (annual mean)",
-    "lst_temp_r100_y": "Land surface temperature (100 m)",
+    "imperv_100m":     "Impervious surface",
+    "poll_bc_anmean":  "Black carbon",
+    "lst_temp_r100_y": "Land surface temperature",
     "insolation9":     "Solar radiation",
 }
 
