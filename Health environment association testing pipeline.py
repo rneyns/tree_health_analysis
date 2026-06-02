@@ -30,16 +30,12 @@ health_vars = [
 ]
 
 env_vars = [
-    "imperv_10m",
-    "imperv_20m",
-    "imperv_50m",
     "imperv_100m",
     "poll_no2_anmean",
     "poll_bc_anmean",
     "poll_pm25_anmean",
     "poll_pm10_anmean",
     "lst_temp_r100_y",
-    "lst_temp_r50_y",
     "insolation9",
 ]
 

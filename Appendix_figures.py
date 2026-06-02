@@ -14,7 +14,7 @@ correlation. Results are summarised as:
     (AppA_dominance_extended_stacked.png)
   - Full results table  (AppA_dominance_extended.csv)
 
-PART B – ALTERNATIVE PREDICTORS (BUFFER SIZES + EXTRA POLLUTANTS)
+PART B – ALTERNATIVE PREDICTORS (EXTRA POLLUTANTS)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Fits univariate OLS models (health ~ predictor + height) for each
 alternative predictor against the five main health metrics. Because
@@ -22,8 +22,31 @@ alternative predictors are strongly correlated with the main ones
 (same environmental variable, different spatial scale or chemical
 proxy), they are NOT added to the existing multivariate models.
 Results are summarised as:
-  - Coefficient sign + significance heatmap per health metric
+  - Coefficient direction × species-agreement heatmap
     (AppB_univariate_coef_heatmap.png)
+
+    Design rationale
+    ────────────────
+    Colour HUE   : direction of association across the majority of species
+                     Red  = positive (majority of species show β > 0)
+                     Blue = negative (majority of species show β < 0)
+                     Grey = no majority (≤ 2 species agree on direction)
+
+    Colour SHADE : how many species agree on that direction (out of 5)
+                     3 species → light shade  (40 % opacity equivalent)
+                     4 species → medium shade (70 % opacity equivalent)
+                     5 species → full shade   (100 % opacity)
+                   This makes consensus immediately visible: dark = robust,
+                   light = tentative.
+
+    Cell TEXT    : fraction of species for which the association is
+                   statistically significant (p < 0.05), irrespective of
+                   direction. This is reported separately from directional
+                   consensus so the two concepts are not conflated.
+
+    Legend       : discrete, matching the actual categories shown in the
+                   matrix (not a continuous colorbar).
+
   - R² heatmap showing explained variance per predictor × metric
     (AppB_univariate_r2_heatmap.png)
   - Full results table  (AppB_univariate_results.csv)
@@ -42,6 +65,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import matplotlib.colors as mcolors
 from scipy import stats
 
@@ -91,6 +115,10 @@ MIN_N        = 30
 FIG_DPI      = 200
 MAX_PREDICTORS_DA = 10
 
+# Number of species in the study – used to scale directional-agreement
+# colour shading. Update this if species are added or removed.
+N_SPECIES = 5
+
 # ── MAIN health metrics (used in main analysis) ───────────
 MAIN_HEALTH_VARS = [
     "ndvi_peak",
@@ -109,7 +137,6 @@ MAIN_PREDICTORS = [
 ]
 
 # ── PART A: additional health metrics for appendix ────────
-# Excludes metrics too noisy or derivable from main ones
 EXTRA_HEALTH_VARS = [
     "greenup_doy",
     "peak_doy",
@@ -125,23 +152,11 @@ EXTRA_HEALTH_VARS = [
 ]
 
 # ── PART B: alternative predictors for appendix ──────────
-# Grouped by environmental category so the heatmap is readable.
-# Each group shares a conceptual variable with a main predictor
-# but differs in spatial scale or chemical species.
 EXTRA_PREDICTORS = {
-    # Impervious surface – buffer variants
-    "imperv_10m":       "Impervious surface (10 m)",
-    "imperv_20m":       "Impervious surface (20 m)",
-    "imperv_50m":       "Impervious surface (50 m)",
-    # LST – buffer and source variants
-    "lst_temp_r50_y":   "LST (50 m)",
-    # Additional air pollutants
-    "poll_no2_anmean":  "NO₂ (annual mean)",
-    "poll_pm10_anmean": "PM10 (annual mean)",
-    "poll_pm25_anmean": "PM2.5 (annual mean)",
+    "poll_no2_anmean":    "NO₂ (annual mean)",
+    "poll_pm10_anmean":   "PM10 (annual mean)",
+    "poll_pm25_anmean":   "PM2.5 (annual mean)",
     "poll_belaqi_anmean": "BelAQI index (annual mean)",
-    # Solar radiation – alternative buffer
-    "insolation3":      "Solar radiation (3×3)",
 }
 
 # ── Human-readable labels ─────────────────────────────────
@@ -172,30 +187,29 @@ PREDICTOR_LABELS = {
     "lst_temp_r100_y":    "LST",
     "insolation9":        "Solar radiation",
 }
-# Merge extra predictor labels into the lookup
 PREDICTOR_LABELS.update(EXTRA_PREDICTORS)
 
-# ── Biological filters (applied before modelling) ─────────
+# ── Biological filters ────────────────────────────────────
 BIOLOGICAL_FILTERS = {
-    "los_days":              lambda x: (x >= 60)   & (x <= 365),
-    "sos_doy":               lambda x: (x >= 1)    & (x <= 250),
-    "greenup_doy":           lambda x: (x >= 1)    & (x <= 200),
-    "peak_doy":              lambda x: (x >= 1)    & (x <= 300),
-    "sen_onset_doy":         lambda x: (x >= 150)  & (x <= 365),
-    "eos_doy":               lambda x: (x >= 200)  & (x <= 365),
-    "ndvi_peak":             lambda x: (x >= -0.1) & (x <= 1.0),
-    "amplitude":             lambda x: (x >= -0.1) & (x <= 1.0),
-    "ndvi_base":             lambda x: (x >= -0.1) & (x <= 1.0),
-    "ndvi_eos":              lambda x: (x >= -0.1) & (x <= 1.0),
-    "auc_above_base_full":   lambda x: x > -1e9,
-    "auc_above_base_sos_eos":lambda x: x > -1e9,
-    "plateau_days":          lambda x: (x >= 0)    & (x <= 365),
-    "decline_days":          lambda x: (x >= 0)    & (x <= 365),
-    "height":                lambda x: x > 1,
-    "poll_bc_anmean":        lambda x: x > 0,
-    "poll_no2_anmean":       lambda x: x > 0,
-    "poll_pm10_anmean":      lambda x: x > 0,
-    "poll_pm25_anmean":      lambda x: x > 0,
+    "los_days":               lambda x: (x >= 60)   & (x <= 365),
+    "sos_doy":                lambda x: (x >= 1)    & (x <= 250),
+    "greenup_doy":            lambda x: (x >= 1)    & (x <= 200),
+    "peak_doy":               lambda x: (x >= 1)    & (x <= 300),
+    "sen_onset_doy":          lambda x: (x >= 150)  & (x <= 365),
+    "eos_doy":                lambda x: (x >= 200)  & (x <= 365),
+    "ndvi_peak":              lambda x: (x >= -0.1) & (x <= 1.0),
+    "amplitude":              lambda x: (x >= -0.1) & (x <= 1.0),
+    "ndvi_base":              lambda x: (x >= -0.1) & (x <= 1.0),
+    "ndvi_eos":               lambda x: (x >= -0.1) & (x <= 1.0),
+    "auc_above_base_full":    lambda x: x > -1e9,
+    "auc_above_base_sos_eos": lambda x: x > -1e9,
+    "plateau_days":           lambda x: (x >= 0)    & (x <= 365),
+    "decline_days":           lambda x: (x >= 0)    & (x <= 365),
+    "height":                 lambda x: x > 1,
+    "poll_bc_anmean":         lambda x: x > 0,
+    "poll_no2_anmean":        lambda x: x > 0,
+    "poll_pm10_anmean":       lambda x: x > 0,
+    "poll_pm25_anmean":       lambda x: x > 0,
 }
 
 # Colour palette for dominance stacked bars
@@ -207,6 +221,33 @@ DA_COLOURS = ["#4C72B0", "#DD8452", "#55A868", "#C44E52",
 HEALTH_ORDER_MAIN  = [HEALTH_LABELS[h] for h in MAIN_HEALTH_VARS]
 HEALTH_ORDER_EXTRA = [HEALTH_LABELS[h] for h in EXTRA_HEALTH_VARS]
 HEALTH_ORDER_ALL   = HEALTH_ORDER_MAIN + HEALTH_ORDER_EXTRA
+
+# ── Colours used in Part B coefficient heatmap ────────────
+# Base hues for positive (red) and negative (blue) directions.
+# Three shades per hue correspond to 3 / 4 / 5 species agreeing.
+_RED_BASE  = np.array([0.769, 0.306, 0.322])   # #C44E52
+_BLUE_BASE = np.array([0.298, 0.447, 0.690])   # #4C72B0
+_GREY_CELL = np.array([0.88,  0.88,  0.88])    # no majority
+
+def _shade(base_rgb, n_agree, n_total=N_SPECIES):
+    """
+    Return an RGBA tuple for a cell where `n_agree` out of `n_total`
+    species agree on direction.
+      n_agree == n_total     → full colour  (alpha 1.0)
+      n_agree == n_total - 1 → medium shade (alpha 0.65)
+      n_agree == n_total - 2 → light shade  (alpha 0.35)
+    Values below the majority threshold should not be passed here.
+    """
+    alphas = {0: 0.35, 1: 0.65, 2: 1.0}
+    # distance from the minimum majority (ceil(n_total/2)+1 could vary,
+    # but we fix majority = > n_total/2, so minimum majority is 3 for 5 species)
+    min_majority = (n_total // 2) + 1          # 3 for N_SPECIES=5
+    level = min(n_agree - min_majority, 2)     # 0 / 1 / 2
+    alpha = alphas.get(level, 1.0)
+    # Blend base colour with white according to alpha
+    white = np.ones(3)
+    blended = alpha * base_rgb + (1 - alpha) * white
+    return tuple(blended) + (1.0,)             # fully opaque RGBA
 
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -284,7 +325,6 @@ def load_species(species, csv_path, required_cols):
 
     missing = [c for c in required_cols if c not in df.columns]
     if missing:
-        # Only warn for columns we truly need; extras may not exist for all species
         hard_missing = [c for c in missing if c in MAIN_PREDICTORS + CONTROL_VARS]
         if hard_missing:
             print(f"  [skip] Missing required columns: {hard_missing}")
@@ -400,8 +440,8 @@ def run_part_A():
                 print(f"    [skip] {health}: column not found")
                 continue
 
-            h_lbl   = HEALTH_LABELS.get(health, health)
-            needed  = [health] + MAIN_PREDICTORS + CONTROL_VARS
+            h_lbl  = HEALTH_LABELS.get(health, health)
+            needed = [health] + MAIN_PREDICTORS + CONTROL_VARS
             d = df[[c for c in needed if c in df.columns]].dropna().copy()
             for c in d.columns:
                 d[c] = pd.to_numeric(d[c], errors="coerce")
@@ -495,7 +535,6 @@ def _plot_A_stacked(da_all):
     """
     Stacked bar chart: average dominance weight per health metric,
     bars coloured by predictor, one bar per health metric.
-    Both extra-only and a combined (main + extra) panel.
     """
     pred_list    = [PREDICTOR_LABELS.get(p, p) for p in MAIN_PREDICTORS]
     health_order = [h for h in HEALTH_ORDER_ALL
@@ -528,13 +567,12 @@ def _plot_A_stacked(da_all):
     )
     ax.legend(loc="upper right", fontsize=8, framealpha=0.85)
 
-    # Subtle vertical separator between extra metrics
+    # Vertical separator between main and extra metrics
     if health_order:
         n_extra = len([h for h in health_order if h in HEALTH_ORDER_EXTRA])
         n_main  = len(health_order) - n_extra
         if n_main > 0 and n_extra > 0:
-            ax.axvline(n_main - 0.5, color="grey", lw=1.2,
-                       ls="--", alpha=0.7)
+            ax.axvline(n_main - 0.5, color="grey", lw=1.2, ls="--", alpha=0.7)
             ax.text(n_main - 0.5, ax.get_ylim()[1] * 0.97,
                     "← main analysis  |  appendix →",
                     ha="center", va="top", fontsize=7, color="grey")
@@ -603,9 +641,9 @@ def run_part_B():
                 res_ctrl    = sm.OLS(y, X_ctrl_only).fit()
                 partial_r2  = res.rsquared - res_ctrl.rsquared
 
-                coef  = res.params.get(pred_code, np.nan)
-                pval  = res.pvalues.get(pred_code, np.nan)
-                se    = res.bse.get(pred_code, np.nan)
+                coef = res.params.get(pred_code, np.nan)
+                pval = res.pvalues.get(pred_code, np.nan)
+                se   = res.bse.get(pred_code, np.nan)
 
                 all_rows.append({
                     "species":        sp_pretty,
@@ -616,7 +654,7 @@ def run_part_B():
                     "se":             se,
                     "p_value":        pval,
                     "significant":    pval < ALPHA if np.isfinite(pval) else False,
-                    "coef_sign":      np.sign(coef) if np.isfinite(coef) else 0,
+                    "coef_sign":      int(np.sign(coef)) if np.isfinite(coef) else 0,
                     "R2_model":       res.rsquared,
                     "R2_adj_model":   res.rsquared_adj,
                     "partial_R2":     partial_r2,
@@ -637,88 +675,206 @@ def run_part_B():
     _plot_B_r2_heatmap(results)
 
 
-def _coef_sign_matrix(results, health_order, pred_order, species_list):
-    """
-    Build a matrix of average signed significance:
-      +1  if avg coef > 0 and majority of species significant
-      -1  if avg coef < 0 and majority of species significant
-       0  otherwise
-    Also returns the fraction of species that are significant.
-    """
-    n_h = len(health_order)
-    n_p = len(pred_order)
-    sign_mat = np.zeros((n_p, n_h))
-    sig_frac = np.zeros((n_p, n_h))
+# ──────────────────────────────────────────────────────────
+# Part B coefficient heatmap – redesigned
+# ──────────────────────────────────────────────────────────
 
-    for hi, hm in enumerate(health_order):
-        for pi, pred in enumerate(pred_order):
+def _build_coef_matrix(results, health_order, pred_order):
+    """
+    For each (predictor × health metric) cell, compute:
+      - n_positive : number of species with β > 0
+      - n_negative : number of species with β < 0
+      - n_significant : number of species where p < ALPHA
+      - majority_direction : +1 (positive majority), -1 (negative majority),
+                              0 (no majority, i.e. tied or ≤ N_SPECIES//2 agree)
+      - n_majority : how many species agree with the majority direction
+
+    A majority requires strictly more than half the available species
+    (those for which data existed) to agree on the same sign.
+    """
+    min_majority = (N_SPECIES // 2) + 1   # 3 for 5 species
+
+    records = []
+    for hm in health_order:
+        for pred in pred_order:
             sub = results[(results["health_metric"] == hm) &
                           (results["predictor"] == pred)]
             if sub.empty:
+                records.append({
+                    "health_metric":      hm,
+                    "predictor":          pred,
+                    "n_positive":         0,
+                    "n_negative":         0,
+                    "n_significant":      0,
+                    "majority_direction": 0,
+                    "n_majority":         0,
+                    "n_available":        0,
+                })
                 continue
-            frac  = sub["significant"].mean()
-            avg_c = sub["coefficient"].mean()
-            sig_frac[pi, hi] = frac
-            sign_mat[pi, hi] = np.sign(avg_c) if frac >= 0.4 else 0
 
-    return sign_mat, sig_frac
+            n_available  = len(sub)
+            n_pos        = (sub["coef_sign"] >  0).sum()
+            n_neg        = (sub["coef_sign"] <  0).sum()
+            n_sig        = sub["significant"].sum()
+
+            if n_pos >= min_majority:
+                direction = +1
+                n_maj     = int(n_pos)
+            elif n_neg >= min_majority:
+                direction = -1
+                n_maj     = int(n_neg)
+            else:
+                direction = 0
+                n_maj     = int(max(n_pos, n_neg))
+
+            records.append({
+                "health_metric":      hm,
+                "predictor":          pred,
+                "n_positive":         int(n_pos),
+                "n_negative":         int(n_neg),
+                "n_significant":      int(n_sig),
+                "majority_direction": direction,
+                "n_majority":         n_maj,
+                "n_available":        n_available,
+            })
+
+    return pd.DataFrame(records)
+
+
+def _cell_colour(direction, n_majority, n_available):
+    """
+    Return an RGBA face colour for a heatmap cell.
+
+    direction   : +1 / -1 / 0
+    n_majority  : how many species agree (only meaningful when direction ≠ 0)
+    n_available : total number of species with data for this cell
+    """
+    if direction == 0 or n_available == 0:
+        return tuple(_GREY_CELL) + (1.0,)
+    base = _RED_BASE if direction > 0 else _BLUE_BASE
+    return _shade(base, n_majority, n_total=n_available)
 
 
 def _plot_B_coef_heatmap(results):
     """
-    Heatmap of coefficient direction and significance.
-    Colour encodes sign (blue = negative, red = positive, white = n.s.).
-    Cell text shows fraction of species with significant association.
+    Redesigned coefficient direction heatmap for Part B.
+
+    Colour hue    : direction of association (red = positive, blue = negative,
+                    grey = no majority among available species)
+    Colour shade  : number of species agreeing with the majority direction
+                    (light = 3 / 5, medium = 4 / 5, dark = 5 / 5)
+    Cell text     : fraction of species with a significant association (p < 0.05),
+                    reported independently of directional consensus
+    Legend        : discrete patches, one per category
     """
     health_order = [h for h in HEALTH_ORDER_MAIN
                     if h in results["health_metric"].unique()]
     pred_order   = [EXTRA_PREDICTORS[p] for p in EXTRA_PREDICTORS
                     if EXTRA_PREDICTORS[p] in results["predictor"].unique()]
-    species_list = list(results["species"].unique())
 
-    sign_mat, sig_frac = _coef_sign_matrix(
-        results, health_order, pred_order, species_list
-    )
+    if not health_order or not pred_order:
+        print("  [warn] No data to plot for Part B coefficient heatmap.")
+        return
 
-    # Custom diverging colormap: blue → white → red
-    cmap = mcolors.LinearSegmentedColormap.from_list(
-        "bwr_custom", ["#4C72B0", "#f7f7f7", "#C44E52"]
-    )
-    norm = mcolors.Normalize(vmin=-1, vmax=1)
+    mat_df = _build_coef_matrix(results, health_order, pred_order)
+
+    n_h = len(health_order)
+    n_p = len(pred_order)
 
     fig, ax = plt.subplots(
-        figsize=(max(6, 1.5 * len(health_order)),
-                 1.0 + 0.55 * len(pred_order))
+        figsize=(max(6, 1.6 * n_h), 1.4 + 0.65 * n_p)
     )
-    im = ax.imshow(sign_mat, aspect="auto", cmap=cmap, norm=norm)
 
-    for pi in range(len(pred_order)):
-        for hi in range(len(health_order)):
-            frac = sig_frac[pi, hi]
-            val  = sign_mat[pi, hi]
-            # Show fraction of significant species as text
-            label = f"{frac:.0%}" if frac > 0 else "n.s."
-            txt_c = "white" if abs(val) > 0.5 else "black"
-            ax.text(hi, pi, label, ha="center", va="center",
-                    fontsize=8, color=txt_c)
+    # Draw cells manually so each gets its own computed colour
+    for pi, pred in enumerate(pred_order):
+        for hi, hm in enumerate(health_order):
+            row = mat_df[(mat_df["predictor"] == pred) &
+                         (mat_df["health_metric"] == hm)]
+            if row.empty:
+                facecolor = tuple(_GREY_CELL) + (1.0,)
+                txt       = ""
+                n_sig     = 0
+                n_avail   = 0
+            else:
+                row         = row.iloc[0]
+                direction   = row["majority_direction"]
+                n_majority  = row["n_majority"]
+                n_avail     = row["n_available"]
+                n_sig       = row["n_significant"]
+                facecolor   = _cell_colour(direction, n_majority, n_avail)
 
-    ax.set_xticks(range(len(health_order)))
+            # Draw filled rectangle
+            rect = plt.Rectangle(
+                (hi - 0.5, pi - 0.5), 1, 1,
+                facecolor=facecolor, edgecolor="white", linewidth=1.2
+            )
+            ax.add_patch(rect)
+
+            # Cell text: fraction significant (e.g. "3/5")
+            if n_avail > 0:
+                txt = f"{n_sig}/{n_avail}"
+                # Choose text colour for legibility against the cell colour
+                brightness = 0.299*facecolor[0] + 0.587*facecolor[1] + 0.114*facecolor[2]
+                txt_color  = "white" if brightness < 0.55 else "black"
+                ax.text(hi, pi, txt,
+                        ha="center", va="center",
+                        fontsize=8.5, color=txt_color,
+                        fontweight="bold")
+
+    ax.set_xlim(-0.5, n_h - 0.5)
+    ax.set_ylim(-0.5, n_p - 0.5)
+    ax.set_xticks(range(n_h))
     ax.set_xticklabels(health_order, rotation=35, ha="right", fontsize=9)
-    ax.set_yticks(range(len(pred_order)))
-    ax.set_yticklabels(pred_order, fontsize=8)
+    ax.set_yticks(range(n_p))
+    ax.set_yticklabels(pred_order, fontsize=9)
+    ax.set_aspect("equal")
 
-    cbar = plt.colorbar(im, ax=ax, ticks=[-1, 0, 1], shrink=0.7)
-    cbar.set_ticklabels(["Negative", "n.s.", "Positive"])
-    cbar.set_label("Average direction of association", fontsize=8)
+    # ── Discrete legend ───────────────────────────────────
+    min_majority = (N_SPECIES // 2) + 1   # = 3 for 5 species
+    legend_items = []
+
+    # Positive direction shades
+    for n_agree in range(min_majority, N_SPECIES + 1):
+        col   = _shade(_RED_BASE, n_agree, n_total=N_SPECIES)
+        label = f"Positive – {n_agree}/{N_SPECIES} species"
+        legend_items.append(mpatches.Patch(facecolor=col, edgecolor="grey",
+                                           linewidth=0.5, label=label))
+
+    # Negative direction shades
+    for n_agree in range(min_majority, N_SPECIES + 1):
+        col   = _shade(_BLUE_BASE, n_agree, n_total=N_SPECIES)
+        label = f"Negative – {n_agree}/{N_SPECIES} species"
+        legend_items.append(mpatches.Patch(facecolor=col, edgecolor="grey",
+                                           linewidth=0.5, label=label))
+
+    # No majority
+    legend_items.append(mpatches.Patch(
+        facecolor=tuple(_GREY_CELL) + (1.0,),
+        edgecolor="grey", linewidth=0.5,
+        label=f"No majority (≤ {min_majority - 1}/{N_SPECIES} agree)"
+    ))
+
+    ax.legend(
+        handles=legend_items,
+        loc="upper left",
+        bbox_to_anchor=(1.02, 1.0),
+        borderaxespad=0,
+        fontsize=8,
+        title="Direction  (shade = consensus\namong available species)",
+        title_fontsize=8,
+        framealpha=0.9,
+    )
 
     ax.set_title(
-        "Appendix B – Alternative predictors: coefficient direction and significance\n"
-        "Colour = average direction  |  text = fraction of species with p < 0.05\n"
-        "(univariate OLS, height-controlled)",
-        fontsize=10
+        "Appendix B – Alternative predictors: direction of association\n"
+        "Colour = majority direction  |  shade = number of agreeing species\n"
+        "Cell text = no. of species with significant association (p < 0.05)",
+        fontsize=10, pad=12
     )
+
     plt.tight_layout()
-    fig.savefig(OUT_ROOT / "AppB_univariate_coef_heatmap.png", dpi=FIG_DPI)
+    fig.savefig(OUT_ROOT / "AppB_univariate_coef_heatmap.png",
+                dpi=FIG_DPI, bbox_inches="tight")
     plt.close(fig)
     print("  Saved: AppB_univariate_coef_heatmap.png")
 
@@ -733,21 +889,14 @@ def _plot_B_r2_heatmap(results):
     pred_order   = [EXTRA_PREDICTORS[p] for p in EXTRA_PREDICTORS
                     if EXTRA_PREDICTORS[p] in results["predictor"].unique()]
 
-    # Also add the main predictors as reference rows so readers can compare
-    # buffer sizes directly against the main 100 m choice
-    main_pred_labels = [PREDICTOR_LABELS[p] for p in MAIN_PREDICTORS]
-
-    # Build pivot: rows = predictors (extra + main reference), cols = health metrics
     agg = (results.groupby(["health_metric", "predictor"])["partial_R2"]
            .mean().reset_index())
 
-    all_preds = pred_order  # extra only; main are in main paper
-
-    n_p = len(all_preds)
+    n_p = len(pred_order)
     n_h = len(health_order)
     mat = np.full((n_p, n_h), np.nan)
 
-    for pi, pred in enumerate(all_preds):
+    for pi, pred in enumerate(pred_order):
         for hi, hm in enumerate(health_order):
             sub = agg[(agg.predictor == pred) & (agg.health_metric == hm)]
             if not sub.empty:
@@ -770,7 +919,7 @@ def _plot_B_r2_heatmap(results):
     ax.set_xticks(range(n_h))
     ax.set_xticklabels(health_order, rotation=35, ha="right", fontsize=9)
     ax.set_yticks(range(n_p))
-    ax.set_yticklabels(all_preds, fontsize=8)
+    ax.set_yticklabels(pred_order, fontsize=8)
 
     cbar = plt.colorbar(im, ax=ax, shrink=0.7)
     cbar.set_label("Partial R²  (above height alone, avg. across species)", fontsize=8)
