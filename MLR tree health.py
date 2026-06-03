@@ -19,6 +19,7 @@ For each species CSV and each health metric:
         - Reports total, unique, and average additional dominance per predictor
         - Saves dominance table and stacked bar chart per species x health metric
         - Combined heatmap of dominance weights across all species
+        - Combined plots show only the 5 main health indicators
 6)  Save results tables + figures per species
 7)  Combined summary tables and figures across all species
 
@@ -83,11 +84,16 @@ SPECIES_LABELS = {
 }
 
 HEALTH_LABELS = {
-    "ndvi_peak":           "Peak NDVI",
-    "sos_doy":             "Start of season (DOY)",
-    "los_days":            "Length of season (days)",
-    "amplitude":           "NDVI amplitude",
-    "auc_above_base_full": "Seasonal NDVI integral",
+    "ndvi_peak":            "Peak NDVI",
+    "amplitude":            "NDVI amplitude",
+    "sos_doy":              "Start of season (DOY)",
+    "peak_doy":             "Peak NDVI (DOY)",
+    "eos_doy":              "End of season (DOY)",
+    "los_days":             "Length of season (days)",
+    "slope_sos_peak":       "Green-up rate (SOS→peak)",
+    "senescence_rate":      "Senescence rate",
+    "mean_senescence_rate": "Mean senescence rate",
+    "auc_above_base_full":  "Seasonal NDVI integral (above base)",
 }
 
 PREDICTOR_LABELS = {
@@ -101,9 +107,33 @@ OUT_ROOT = Path("/Users/robbe_neyns/Documents/Work_local/research/UHI tree healt
 OUT_ROOT.mkdir(parents=True, exist_ok=True)
 
 # Model variables
-CONTROL_VARS = ["height"]           # controlled for but excluded from dominance analysis
-HEALTH_VARS  = ["ndvi_peak", "sos_doy", "los_days", "amplitude", "auc_above_base_full"]
-PREDICTORS   = [                    # 100 m buffers only; one variable per environmental category
+CONTROL_VARS = ["height"]   # controlled for but excluded from dominance analysis
+
+# ALL health metrics — figures and models produced for every entry
+HEALTH_VARS = [
+    "ndvi_peak", "amplitude",
+    "sos_doy", "peak_doy", "eos_doy", "los_days",
+    "slope_sos_peak", "senescence_rate", "mean_senescence_rate",
+    "auc_above_base_full",
+]
+
+# Subset discussed in detail in the paper — reference only, does not affect outputs
+HEALTH_VARS_DESCRIBE = ["ndvi_peak", "sos_doy", "los_days"]
+
+# Desired order in combined heatmap (mirrors HEALTH_LABELS order above)
+HEALTH_ORDER = [HEALTH_LABELS[h] for h in HEALTH_VARS]
+
+# Health metrics shown in combined dominance plots and forest plot (5 main indicators)
+DOMINANCE_HEALTH_VARS = [
+    "ndvi_peak",
+    "amplitude",
+    "sos_doy",
+    "los_days",
+    "auc_above_base_full",
+]
+DOMINANCE_HEALTH_ORDER = [HEALTH_LABELS[h] for h in DOMINANCE_HEALTH_VARS]
+
+PREDICTORS = [
     "imperv_100m",
     "poll_bc_anmean",
     "lst_temp_r100_y",
@@ -129,27 +159,38 @@ K_NEIGHBORS    = 8
 N_PERMUTATIONS = 999
 SEED_MORAN     = 42
 
-# Dominance analysis: cap submodel fits for large predictor sets (2^k models total)
-# With k=4 predictors this is 15 submodels — fast. Increase MAX_PREDICTORS_DA
-# only if you reduce PREDICTORS to avoid combinatorial explosion.
+# Dominance analysis: with k=4 predictors this is 15 submodels — fast.
+# Increase MAX_PREDICTORS_DA only if you reduce PREDICTORS.
 MAX_PREDICTORS_DA = 10
 
 # Plot settings
 FIG_DPI = 200
 
 BIOLOGICAL_FILTERS = {
-    "los_days":            lambda x: (x >= 60)   & (x <= 365),
-    "sos_doy":             lambda x: (x >= 1)    & (x <= 250),
-    "ndvi_peak":           lambda x: (x >= -0.1) & (x <= 1.0),
-    "amplitude":           lambda x: (x >= -0.1) & (x <= 1.0),
-    "auc_above_base_full": lambda x: x > -1e9,
-    "height":              lambda x: x > 1,
-    "poll_bc_anmean":      lambda x: x > 0,
+    "ndvi_base":            lambda x: (x >= -0.1) & (x <= 1.0),
+    "ndvi_peak":            lambda x: (x >= -0.1) & (x <= 1.0),
+    "amplitude":            lambda x: (x >= -0.1) & (x <= 1.0),
+    "ndvi_eos":             lambda x: (x >= -0.1) & (x <= 1.0),
+    "sos_doy":              lambda x: (x >= 1)    & (x <= 250),
+    "peak_doy":             lambda x: (x >= 1)    & (x <= 365),
+    "eos_doy":              lambda x: (x >= 1)    & (x <= 365),
+    "los_days":             lambda x: (x >= 60)   & (x <= 365),
+    "slope_sos_peak":       lambda x: np.isfinite(x),
+    "senescence_rate":      lambda x: np.isfinite(x),
+    "mean_senescence_rate": lambda x: np.isfinite(x),
+    "auc_full":             lambda x: x > -1e9,
+    "auc_sos_eos":          lambda x: x > -1e9,
+    "auc_above_base_full":  lambda x: x > -1e9,
+    "height":               lambda x: x > 1,
+    "poll_bc_anmean":       lambda x: x > 0,
 }
 
-# Colour palette for dominance stacked bars (one per predictor)
+# Colour palette for dominance stacked bars and forest plot (one per predictor)
 DA_COLOURS = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B2",
               "#937860", "#DA8BC3", "#8C8C8C", "#CCB974", "#64B5CD"]
+
+# Sign symbols used in dominance plots and heatmaps
+SIGN_LABELS = {1.0: "(+)", -1.0: "(−)", 0.0: "(0)"}
 
 
 # ============================================================
@@ -288,25 +329,12 @@ def _r2_ols(y: np.ndarray, X: np.ndarray) -> float:
 def dominance_analysis(y: np.ndarray,
                         X_predictors: np.ndarray,
                         X_controls: np.ndarray,
-                        predictor_names: list) -> pd.DataFrame:
+                        predictor_names: list,
+                        predictor_signs: dict) -> pd.DataFrame:
     """
     Compute general dominance weights (Budescu, 1993) for each predictor
-    after partialling out the control variables.
-
-    Strategy:
-        1. Residualise y and each predictor column on the controls.
-           This removes the control variance before dominance analysis,
-           so weights reflect contributions among trees of similar height.
-        2. For every non-empty subset S of predictors, fit OLS on the
-           residualised predictors in S and record R²(S).
-        3. For each predictor j and each subset S not containing j,
-           compute the additional R² from adding j: R²(S∪{j}) − R²(S).
-        4. Average the additional R² over all subsets of the same size,
-           then average across all sizes → general dominance weight.
-
-    Returns a DataFrame with columns:
-        predictor, dominance_weight, pct_of_r2
-    sorted descending by dominance_weight.
+    after partialling out the control variables. Direction of association
+    (sign of MLR coefficient) is attached to each predictor for display.
     """
     k = len(predictor_names)
     if k > MAX_PREDICTORS_DA:
@@ -315,37 +343,25 @@ def dominance_analysis(y: np.ndarray,
             f"Reduce PREDICTORS or increase MAX_PREDICTORS_DA."
         )
 
-    # ---- Residualise on controls ----
     def _resid_on_controls(v: np.ndarray) -> np.ndarray:
         if X_controls.shape[1] == 0:
             return v - v.mean()
         Xc = sm.add_constant(X_controls, has_constant="add")
         return sm.OLS(v, Xc).fit().resid
 
-    y_resid = _resid_on_controls(y)
+    y_resid  = _resid_on_controls(y)
     Xp_resid = np.column_stack([_resid_on_controls(X_predictors[:, j]) for j in range(k)])
 
-    # ---- Cache R² for all subsets ----
-    # key: frozenset of predictor indices → R²
     r2_cache: dict = {frozenset(): 0.0}
-
     for size in range(1, k + 1):
         for subset in combinations(range(k), size):
             fs = frozenset(subset)
-            X_sub = Xp_resid[:, list(subset)]
-            r2_cache[fs] = _r2_ols(y_resid, X_sub)
-
-    # ---- Compute general dominance weights ----
-    # For each predictor j:
-    #   For each subset size s in {0, ..., k-1}:
-    #     average additional R² of adding j to all subsets of size s not containing j
-    #   General dominance weight = average of the size-level averages
+            r2_cache[fs] = _r2_ols(y_resid, Xp_resid[:, list(subset)])
 
     weights = np.zeros(k)
-
     for j in range(k):
         size_averages = []
-        for s in range(k):   # subset sizes from 0 to k-1
+        for s in range(k):
             increments = []
             for subset in combinations([i for i in range(k) if i != j], s):
                 fs_without = frozenset(subset)
@@ -358,14 +374,20 @@ def dominance_analysis(y: np.ndarray,
     total_weight = weights.sum()
     pct = (weights / total_weight * 100) if total_weight > 1e-10 else np.zeros(k)
 
-    da_df = pd.DataFrame({
-        "predictor":        [PREDICTOR_LABELS.get(p, p) for p in predictor_names],
-        "predictor_code":   predictor_names,
-        "dominance_weight": weights,
-        "pct_of_r2":        pct,
-    }).sort_values("dominance_weight", ascending=False).reset_index(drop=True)
+    signs       = np.array([predictor_signs.get(p, 0.0) for p in predictor_names])
+    sign_labs   = [SIGN_LABELS.get(float(s), "(?)") for s in signs]
+    pred_pretty = [PREDICTOR_LABELS.get(p, p) for p in predictor_names]
+    pred_display = [f"{lab} {sl}" for lab, sl in zip(pred_pretty, sign_labs)]
 
-    return da_df
+    return pd.DataFrame({
+        "predictor":         pred_pretty,
+        "predictor_code":    predictor_names,
+        "dominance_weight":  weights,
+        "pct_of_r2":         pct,
+        "sign":              signs,
+        "sign_label":        sign_labs,
+        "predictor_display": pred_display,
+    }).sort_values("dominance_weight", ascending=False).reset_index(drop=True)
 
 
 # ============================================================
@@ -383,20 +405,18 @@ def plot_scatterplots(df: pd.DataFrame, health: str, predictors: list,
 
     for j, pred in enumerate(predictors):
         ax = axes[j]
-        x = df[pred].values
-        y = df[health].values
+        x  = df[pred].values
+        y  = df[health].values
         mask = np.isfinite(x) & np.isfinite(y)
         xm, ym = x[mask], y[mask]
 
         ax.scatter(xm, ym, s=14, alpha=0.35, color="steelblue", linewidths=0)
-
         if len(xm) > 2:
             slope, intercept, r, p_val, _ = stats.linregress(xm, ym)
             xfit = np.linspace(xm.min(), xm.max(), 200)
             ax.plot(xfit, intercept + slope * xfit, color="firebrick", linewidth=1.6)
-            sig = ("***" if p_val < 0.001 else
-                   "**"  if p_val < 0.01  else
-                   "*"   if p_val < 0.05  else "ns")
+            sig = ("***" if p_val < 0.001 else "**" if p_val < 0.01
+                   else "*" if p_val < 0.05 else "ns")
             ax.set_title(f"r = {r:.3f}  {sig}", fontsize=9)
 
         ax.set_xlabel(PREDICTOR_LABELS.get(pred, pred), fontsize=9)
@@ -414,12 +434,11 @@ def plot_scatterplots(df: pd.DataFrame, health: str, predictors: list,
 def plot_residual_diagnostics(resid: np.ndarray, fitted: np.ndarray,
                                health: str, sp_pretty: str, outpath: Path) -> dict:
     """Residuals vs Fitted | Histogram | Q-Q | Scale-Location."""
-    sw_stat, sw_p = (stats.shapiro(resid) if len(resid) <= 5000
-                     else (np.nan, np.nan))
+    sw_stat, sw_p = (stats.shapiro(resid) if len(resid) <= 5000 else (np.nan, np.nan))
 
     h_label = HEALTH_LABELS.get(health, health)
     fig = plt.figure(figsize=(12, 9))
-    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.4, wspace=0.35)
+    gs  = gridspec.GridSpec(2, 2, figure=fig, hspace=0.4, wspace=0.35)
 
     ax1 = fig.add_subplot(gs[0, 0])
     ax1.scatter(fitted, resid, s=14, alpha=0.35, color="steelblue", linewidths=0)
@@ -450,7 +469,6 @@ def plot_residual_diagnostics(resid: np.ndarray, fitted: np.ndarray,
     fig.suptitle(f"{sp_pretty} – {h_label}\nResidual diagnostics", fontsize=12)
     fig.savefig(outpath, dpi=FIG_DPI)
     plt.close(fig)
-
     return {"shapiro_W": sw_stat, "shapiro_p": sw_p}
 
 
@@ -475,13 +493,11 @@ def plot_coefficients(result, health: str, sp_pretty: str, outpath: Path) -> Non
     params = result.params.drop("const", errors="ignore")
     conf   = result.conf_int().drop("const", errors="ignore")
     pvals  = result.pvalues.drop("const", errors="ignore")
-
     labels = [PREDICTOR_LABELS.get(v, HEALTH_LABELS.get(v, v)) for v in params.index]
-    y = np.arange(len(labels))
+    y      = np.arange(len(labels))
 
     fig, ax = plt.subplots(figsize=(8, 0.7 + 0.6 * len(labels)))
     colors = ["firebrick" if p < ALPHA else "steelblue" for p in pvals]
-
     ax.barh(y, params.values, color=colors, alpha=0.75)
     ax.errorbar(params.values, y,
                 xerr=[params.values - conf[0].values,
@@ -502,16 +518,18 @@ def plot_coefficients(result, health: str, sp_pretty: str, outpath: Path) -> Non
 
 def plot_dominance(da_df: pd.DataFrame, health: str, sp_pretty: str,
                    outpath: Path) -> None:
-    """Horizontal stacked bar showing each predictor's dominance weight."""
+    """
+    Horizontal stacked bar + individual bar showing each predictor's dominance weight.
+    """
     fig, axes = plt.subplots(2, 1, figsize=(9, 5))
 
-    # ---- Top: stacked bar of dominance weights ----
-    ax = axes[0]
+    ax  = axes[0]
     left = 0.0
     for i, row in da_df.iterrows():
         colour = DA_COLOURS[i % len(DA_COLOURS)]
+        label  = f"{row['predictor_display']} ({row['pct_of_r2']:.1f}%)"
         ax.barh(0, row["dominance_weight"], left=left, color=colour,
-                label=f"{row['predictor']} ({row['pct_of_r2']:.1f}%)", height=0.5)
+                label=label, height=0.5)
         if row["dominance_weight"] > 0.005:
             ax.text(left + row["dominance_weight"] / 2, 0,
                     f"{row['pct_of_r2']:.1f}%",
@@ -525,15 +543,17 @@ def plot_dominance(da_df: pd.DataFrame, health: str, sp_pretty: str,
         f"{sp_pretty} – {HEALTH_LABELS.get(health, health)}\n"
         f"Dominance analysis  (total R² from predictors = {left:.3f})"
     )
-    ax.legend(loc="lower right", fontsize=8, framealpha=0.7)
+    ax.legend(loc="lower right", fontsize=8, framealpha=0.7,
+              title="Predictor (direction, % of R²)")
 
-    # ---- Bottom: individual bar per predictor ----
     ax2 = axes[1]
-    colours = [DA_COLOURS[i % len(DA_COLOURS)] for i in range(len(da_df))]
-    ax2.barh(da_df["predictor"], da_df["dominance_weight"], color=colours)
+    bar_colors = ["#4C72B0" if row["sign"] > 0 else
+                  "#C44E52" if row["sign"] < 0 else "#8C8C8C"
+                  for _, row in da_df.iterrows()]
+    ax2.barh(da_df["predictor_display"], da_df["dominance_weight"], color=bar_colors)
     ax2.axvline(0, color="black", linewidth=0.8)
     ax2.set_xlabel("Dominance weight")
-    ax2.set_title("Dominance weights per predictor")
+    ax2.set_title("Dominance weights per predictor  (blue = positive, red = negative)")
 
     plt.tight_layout()
     fig.savefig(outpath, dpi=FIG_DPI)
@@ -545,37 +565,40 @@ def plot_dominance(da_df: pd.DataFrame, health: str, sp_pretty: str,
 # ============================================================
 
 def plot_combined_r2(summary_df: pd.DataFrame, outpath: Path) -> None:
-    """Heatmap of adjusted R² per species × health metric."""
-    HEALTH_ORDER = [
-        "Peak NDVI",
-        "Start of season (DOY)",
-        "Length of season (days)",
-        "NDVI amplitude",
-        "Seasonal NDVI integral",
-    ]
+    """Heatmap of adjusted R² per species × health metric (all metrics)."""
+    piv_r2 = (summary_df
+              .drop_duplicates(subset=["species", "health_metric"])
+              [["species", "health_metric", "R2_adj"]]
+              .pivot(index="species", columns="health_metric", values="R2_adj")
+              .reindex(columns=HEALTH_ORDER))
 
-    piv = (summary_df
-           .drop_duplicates(subset=["species", "health_metric"])
-           [["species", "health_metric", "R2_adj"]]
-           .pivot(index="species", columns="health_metric", values="R2_adj")
-           .reindex(columns=HEALTH_ORDER))
+    n_metrics = len(HEALTH_ORDER)
+    n_species = piv_r2.shape[0]
 
-    fig, ax = plt.subplots(figsize=(10, 0.8 + 0.6 * len(piv)))
-    im = ax.imshow(piv.values, aspect="auto", cmap="YlOrRd", vmin=0, vmax=1)
-    ax.set_xticks(range(len(piv.columns)))
-    ax.set_xticklabels(piv.columns, rotation=35, ha="right", fontsize=9)
-    ax.set_yticks(range(len(piv.index)))
-    ax.set_yticklabels(piv.index, fontsize=9)
-    for i in range(piv.shape[0]):
-        for j in range(piv.shape[1]):
-            val = piv.iloc[i, j]
-            if np.isfinite(val):
-                ax.text(j, i, f"{val:.2f}", ha="center", va="center", fontsize=8,
-                        color="white" if val > 0.6 else "black")
-    plt.colorbar(im, ax=ax, label="Adjusted R²")
-    ax.set_title("Adjusted R² – MLR per species and health metric")
+    fig, ax = plt.subplots(figsize=(max(14, n_metrics * 1.0), 1.4 + 0.7 * n_species))
+    im = ax.imshow(piv_r2.values, aspect="auto", cmap="YlOrRd", vmin=0, vmax=1)
+
+    ax.set_xticks(range(n_metrics))
+    ax.set_xticklabels(HEALTH_ORDER, rotation=45, ha="right", fontsize=8)
+    ax.set_yticks(range(n_species))
+    ax.set_yticklabels(piv_r2.index, fontsize=9)
+
+    for i in range(n_species):
+        for j in range(n_metrics):
+            r2 = piv_r2.iloc[i, j]
+            if np.isfinite(r2):
+                txt_color = "white" if r2 > 0.6 else "black"
+                ax.text(j, i, f"{r2:.2f}",
+                        ha="center", va="center", fontsize=8,
+                        color=txt_color, fontweight="bold")
+
+    plt.colorbar(im, ax=ax, label="Adjusted R²", shrink=0.8)
+    ax.set_title(
+        "Adjusted R² – MLR per species and health metric",
+        fontsize=11
+    )
     plt.tight_layout()
-    fig.savefig(outpath, dpi=FIG_DPI)
+    fig.savefig(outpath, dpi=FIG_DPI, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -587,7 +610,7 @@ def plot_combined_morans(summary_df: pd.DataFrame, outpath: Path) -> None:
            .dropna())
 
     species_list = sub["species"].unique()
-    health_list  = sub["health_metric"].unique()
+    health_list  = [h for h in HEALTH_ORDER if h in sub["health_metric"].unique()]
     y_ticks = {sp: i for i, sp in enumerate(species_list)}
 
     fig, axes = plt.subplots(
@@ -605,7 +628,7 @@ def plot_combined_morans(summary_df: pd.DataFrame, outpath: Path) -> None:
         ax.scatter(hm_sub["morans_I"].values, y_pos, c=colors, s=70, zorder=3)
         ax.axvline(0, color="grey", linewidth=0.8, linestyle="--")
         ax.set_xlabel("Moran's I", fontsize=8)
-        ax.set_title(hm, fontsize=8, wrap=True)
+        ax.set_title(hm, fontsize=7, wrap=True)
         ax.set_yticks(list(y_ticks.values()))
         ax.set_yticklabels(list(y_ticks.keys()), fontsize=8)
 
@@ -614,89 +637,240 @@ def plot_combined_morans(summary_df: pd.DataFrame, outpath: Path) -> None:
         fontsize=10
     )
     plt.tight_layout()
-    fig.savefig(outpath, dpi=FIG_DPI)
+    fig.savefig(outpath, dpi=FIG_DPI, bbox_inches="tight")
     plt.close(fig)
 
 
 def plot_combined_dominance(da_all: pd.DataFrame, outpath: Path) -> None:
     """
     Heatmap of dominance weights (% of R²) across all species × health metrics,
-    with one panel per predictor.
+    one panel per predictor. Restricted to the 5 main health indicators.
     """
     predictors_pretty = da_all["predictor"].unique()
-    health_pretty     = da_all["health_metric"].unique()
-    species_pretty    = da_all["species"].unique()
+    health_pretty = [h for h in DOMINANCE_HEALTH_ORDER if h in da_all["health_metric"].unique()]
+    species_pretty = da_all["species"].unique()
 
     n_pred = len(predictors_pretty)
     fig, axes = plt.subplots(1, n_pred,
-                              figsize=(4.5 * n_pred, 1.0 + 0.55 * len(species_pretty)),
+                              figsize=(4.5 * n_pred, 1.2 + 0.6 * len(species_pretty)),
                               sharey=True)
     if n_pred == 1:
         axes = [axes]
 
     for ax, pred in zip(axes, predictors_pretty):
         sub = da_all[da_all["predictor"] == pred].copy()
-        piv = sub.pivot_table(
-            index="species", columns="health_metric",
-            values="pct_of_r2", aggfunc="mean"
-        ).reindex(columns=health_pretty)
 
-        im = ax.imshow(piv.values, aspect="auto", cmap="Blues", vmin=0, vmax=100)
+        piv_pct  = sub.pivot_table(index="species", columns="health_metric",
+                                    values="pct_of_r2", aggfunc="mean").reindex(columns=health_pretty)
+        piv_sign = sub.pivot_table(index="species", columns="health_metric",
+                                    values="sign",
+                                    aggfunc=lambda x: float(pd.Series(x).mode().iloc[0])
+                                    ).reindex(columns=health_pretty)
+
+        im = ax.imshow(piv_pct.values, aspect="auto", cmap="Blues", vmin=0, vmax=100)
         ax.set_xticks(range(len(health_pretty)))
-        ax.set_xticklabels(health_pretty, rotation=40, ha="right", fontsize=7)
-        ax.set_yticks(range(len(piv.index)))
-        ax.set_yticklabels(piv.index, fontsize=8)
+        ax.set_xticklabels(health_pretty, rotation=45, ha="right", fontsize=7)
+        ax.set_yticks(range(len(piv_pct.index)))
+        ax.set_yticklabels(piv_pct.index, fontsize=8)
         ax.set_title(pred, fontsize=9)
 
-        for i in range(piv.shape[0]):
-            for j in range(piv.shape[1]):
-                val = piv.iloc[i, j]
+        for i in range(piv_pct.shape[0]):
+            for j in range(piv_pct.shape[1]):
+                val  = piv_pct.iloc[i, j]
+                sign = piv_sign.iloc[i, j] if piv_sign.shape == piv_pct.shape else np.nan
                 if np.isfinite(val):
-                    ax.text(j, i, f"{val:.0f}%", ha="center", va="center",
-                            fontsize=7, color="white" if val > 55 else "black")
+                    sign_str  = SIGN_LABELS.get(float(sign), "?") if np.isfinite(sign) else "?"
+                    txt_color = "white" if val > 55 else "black"
+                    ax.text(j, i, f"{val:.0f}%\n{sign_str}",
+                            ha="center", va="center", fontsize=7, color=txt_color)
 
         plt.colorbar(im, ax=ax, label="% of R²", shrink=0.7)
 
-    fig.suptitle("Dominance analysis: % of R² per predictor × species × health metric",
-                 fontsize=11)
+    fig.suptitle(
+        "Dominance analysis: % of R² per predictor × species × health metric\n"
+        "(+/− indicates direction of MLR association)",
+        fontsize=11
+    )
     plt.tight_layout()
-    fig.savefig(outpath, dpi=FIG_DPI)
+    fig.savefig(outpath, dpi=FIG_DPI, bbox_inches="tight")
     plt.close(fig)
 
 
 def plot_combined_dominance_stacked(da_all: pd.DataFrame, outpath: Path) -> None:
     """
-    One stacked bar per health metric, averaged across species,
-    showing how R² is partitioned among predictors.
+    One stacked bar per health metric (5 main indicators only), averaged across species.
     """
-    health_list = list(da_all["health_metric"].unique())
+    health_list = [h for h in DOMINANCE_HEALTH_ORDER if h in da_all["health_metric"].unique()]
     pred_list   = list(da_all["predictor"].unique())
 
-    agg = (da_all.groupby(["health_metric", "predictor"])["dominance_weight"]
+    agg = (da_all
+           .loc[da_all["health_metric"].isin(health_list)]
+           .groupby(["health_metric", "predictor"])["dominance_weight"]
            .mean().reset_index())
 
-    fig, ax = plt.subplots(figsize=(10, 5))
-    x = np.arange(len(health_list))
-    bar_width = 0.55
+    sign_agg = (da_all.groupby("predictor")["sign"]
+                .apply(lambda x: float(pd.Series(x).mode().iloc[0]))
+                .to_dict())
 
-    bottoms = np.zeros(len(health_list))
+    fig, ax = plt.subplots(figsize=(max(8, len(health_list) * 1.2), 5))
+    x         = np.arange(len(health_list))
+    bar_width = 0.55
+    bottoms   = np.zeros(len(health_list))
+
     for pi, pred in enumerate(pred_list):
-        vals = []
-        for hm in health_list:
-            row = agg[(agg["health_metric"] == hm) & (agg["predictor"] == pred)]
-            vals.append(row["dominance_weight"].values[0] if len(row) else 0.0)
-        vals = np.array(vals)
+        vals = np.array([
+            agg.loc[(agg["health_metric"] == hm) & (agg["predictor"] == pred),
+                    "dominance_weight"].values[0]
+            if len(agg[(agg["health_metric"] == hm) & (agg["predictor"] == pred)]) else 0.0
+            for hm in health_list
+        ])
+        sign_str = SIGN_LABELS.get(float(sign_agg.get(pred, 0)), "?")
         ax.bar(x, vals, bottom=bottoms, width=bar_width,
-               color=DA_COLOURS[pi % len(DA_COLOURS)], label=pred)
+               color=DA_COLOURS[pi % len(DA_COLOURS)],
+               label=f"{pred} {sign_str}")
         bottoms += vals
 
     ax.set_xticks(x)
-    ax.set_xticklabels(health_list, rotation=30, ha="right", fontsize=9)
+    ax.set_xticklabels(health_list, rotation=40, ha="right", fontsize=8)
     ax.set_ylabel("Average dominance weight (R²)")
-    ax.set_title("Dominance analysis – average R² partition across species")
+    ax.set_title(
+        "Dominance analysis – average R² partition across species\n"
+        "(+/− in legend indicates direction of MLR association)"
+    )
     ax.legend(loc="upper right", fontsize=8, framealpha=0.8)
     plt.tight_layout()
-    fig.savefig(outpath, dpi=FIG_DPI)
+    fig.savefig(outpath, dpi=FIG_DPI, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_combined_forest(summary_df: pd.DataFrame, outpath: Path) -> None:
+    """
+    Faceted forest plot of standardised MLR coefficients (β*) per species,
+    one panel per health metric (5 main indicators only).
+
+    β* = β × (SD_x / SD_y), computed inside run_mlr_for_health and stored
+    in the summary CSV as std_coefficient / std_ci_lower / std_ci_upper.
+
+    Layout:
+        - Columns  = health metrics (DOMINANCE_HEALTH_VARS)
+        - Rows     = species (one dot+whisker per predictor, vertically offset)
+        - Colour   = predictor (DA_COLOURS palette, consistent with dominance plots)
+        - Filled dot  = p < ALPHA  (significant)
+        - Open dot    = p >= ALPHA (non-significant)
+        - Whiskers = 95% CI of β*
+        - Dashed vertical line at β* = 0
+    """
+    # Filter to 5 main health indicators
+    health_list  = [HEALTH_LABELS[h] for h in DOMINANCE_HEALTH_VARS
+                    if HEALTH_LABELS[h] in summary_df["health_metric"].unique()]
+    species_list = list(summary_df["species"].unique())
+    pred_list    = list(summary_df["predictor"].unique())
+    n_panels     = len(health_list)
+    n_sp         = len(species_list)
+    n_pred       = len(pred_list)
+
+    # Vertical jitter so overlapping predictors within a species row are visible
+    offsets = np.linspace(-0.30, 0.30, n_pred)
+
+    fig, axes = plt.subplots(
+        1, n_panels,
+        figsize=(4.0 * n_panels, 1.2 + 0.52 * n_sp),
+        sharey=True
+    )
+    if n_panels == 1:
+        axes = [axes]
+
+    y_pos = {sp: i for i, sp in enumerate(species_list)}
+
+    for ax, h_label in zip(axes, health_list):
+        sub = summary_df[summary_df["health_metric"] == h_label].copy()
+
+        # Determine a symmetric x-axis limit from the CI extents in this panel
+        lo_vals = sub["std_ci_lower"].dropna()
+        hi_vals = sub["std_ci_upper"].dropna()
+        if len(lo_vals) and len(hi_vals):
+            xlim = max(abs(lo_vals.min()), abs(hi_vals.max())) * 1.15
+            xlim = max(xlim, 0.05)   # guard against near-zero range
+        else:
+            xlim = 1.0
+
+        ax.axvline(0, color="black", linewidth=0.8, linestyle="--", zorder=0)
+
+        for pi, pred in enumerate(pred_list):
+            pred_sub = sub[sub["predictor"] == pred]
+            colour   = DA_COLOURS[pi % len(DA_COLOURS)]
+
+            for _, row in pred_sub.iterrows():
+                yi = y_pos.get(row["species"])
+                if yi is None:
+                    continue
+                yplot = yi + offsets[pi]
+                beta  = row["std_coefficient"]
+                lo    = row["std_ci_lower"]
+                hi    = row["std_ci_upper"]
+                sig   = row["significant"]
+
+                if not (np.isfinite(beta) and np.isfinite(lo) and np.isfinite(hi)):
+                    continue
+
+                # Whisker
+                ax.plot([lo, hi], [yplot, yplot],
+                        color=colour, linewidth=1.3, alpha=0.75, zorder=1,
+                        solid_capstyle="round")
+                # End caps
+                ax.plot([lo, lo], [yplot - 0.06, yplot + 0.06],
+                        color=colour, linewidth=1.0, alpha=0.75, zorder=1)
+                ax.plot([hi, hi], [yplot - 0.06, yplot + 0.06],
+                        color=colour, linewidth=1.0, alpha=0.75, zorder=1)
+                # Dot: filled = significant, open = n.s.
+                face = colour if sig else "white"
+                ax.plot(beta, yplot,
+                        marker="o", markersize=5.5,
+                        color=colour, markerfacecolor=face,
+                        markeredgewidth=1.3, zorder=2, linestyle="none")
+
+        ax.set_title(h_label, fontsize=8, pad=5)
+        ax.set_xlabel("β*", fontsize=8)
+        ax.set_xlim(-xlim, xlim)
+        ax.set_yticks(list(y_pos.values()))
+        ax.set_yticklabels(list(y_pos.keys()), fontsize=8, fontstyle="italic")
+        ax.tick_params(axis="both", labelsize=8)
+        ax.spines[["top", "right"]].set_visible(False)
+
+    # Shared legend: one entry per predictor + significance key
+    legend_handles = [
+        plt.Line2D([0], [0], marker="o", linestyle="-",
+                   color=DA_COLOURS[pi % len(DA_COLOURS)],
+                   markerfacecolor=DA_COLOURS[pi % len(DA_COLOURS)],
+                   markersize=5.5, linewidth=1.3, label=pred)
+        for pi, pred in enumerate(pred_list)
+    ]
+    legend_handles += [
+        plt.Line2D([0], [0], marker="o", linestyle="none",
+                   color="dimgrey", markerfacecolor="dimgrey",
+                   markersize=5.5, markeredgewidth=1.3,
+                   label=f"p < {ALPHA}  (significant)"),
+        plt.Line2D([0], [0], marker="o", linestyle="none",
+                   color="dimgrey", markerfacecolor="white",
+                   markersize=5.5, markeredgewidth=1.3,
+                   label="n.s."),
+    ]
+    fig.legend(
+        handles=legend_handles,
+        loc="lower center",
+        ncol=min(n_pred + 2, 6),
+        fontsize=8,
+        frameon=False,
+        bbox_to_anchor=(0.5, -0.08),
+    )
+
+    fig.suptitle(
+        "Standardised MLR coefficients (β*) per species and health metric\n"
+        "β* = β × SD(x) / SD(y)  |  filled = significant  |  whiskers = 95% CI",
+        fontsize=10
+    )
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=FIG_DPI, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -729,7 +903,6 @@ def run_mlr_for_health(df_sub: pd.DataFrame, health: str,
     n      = len(d)
     h_safe = health.replace("/", "_")
 
-    # ---- Fit full MLR ----
     try:
         result = sm.OLS(y, X_sm).fit()
     except Exception as e:
@@ -739,82 +912,102 @@ def run_mlr_for_health(df_sub: pd.DataFrame, health: str,
     fitted = result.fittedvalues.values
     resid  = result.resid.values
 
-    # ---- 1. Scatterplots ----
+    # Standardised coefficients: β* = β × (SD_x / SD_y)
+    sd_y = np.std(y, ddof=1)
+    ci   = result.conf_int()
+    std_coefs   = {}
+    std_ci_low  = {}
+    std_ci_high = {}
+    for pred in predictors:
+        if pred not in result.params.index:
+            continue
+        sd_x = np.std(d[pred].values.astype(float), ddof=1)
+        scale = (sd_x / sd_y) if sd_y > 1e-10 else 1.0
+        std_coefs[pred]   = result.params[pred] * scale
+        std_ci_low[pred]  = ci.loc[pred, 0]     * scale
+        std_ci_high[pred] = ci.loc[pred, 1]     * scale
+
+    # Extract predictor signs from MLR coefficients
+    predictor_signs = {
+        pred: float(np.sign(result.params[pred]))
+        for pred in predictors if pred in result.params
+    }
+
+    # 1. Scatterplots
     plot_scatterplots(d, health, predictors, sp_pretty,
                       out_dir / f"{h_safe}_scatterplots.png")
 
-    # ---- 2. Residual diagnostics ----
+    # 2. Residual diagnostics
     sw = plot_residual_diagnostics(resid, fitted, health, sp_pretty,
                                     out_dir / f"{h_safe}_residual_diagnostics.png")
 
-    # ---- 3. VIF ----
-    X_vif    = X_sm.drop(columns=["const"], errors="ignore")
-    vif_vals = [variance_inflation_factor(X_vif.values, i)
-                for i in range(X_vif.shape[1])]
-    vif_labels = [PREDICTOR_LABELS.get(c, HEALTH_LABELS.get(c, c))
-                  for c in X_vif.columns]
-    vif_df = pd.DataFrame({"variable": vif_labels, "VIF": vif_vals})
+    # 3. VIF
+    X_vif      = X_sm.drop(columns=["const"], errors="ignore")
+    vif_vals   = [variance_inflation_factor(X_vif.values, i) for i in range(X_vif.shape[1])]
+    vif_labels = [PREDICTOR_LABELS.get(c, HEALTH_LABELS.get(c, c)) for c in X_vif.columns]
+    vif_df     = pd.DataFrame({"variable": vif_labels, "VIF": vif_vals})
     plot_vif(vif_df, health, sp_pretty, out_dir / f"{h_safe}_VIF.png")
 
-    # ---- 4. Coefficient forest plot ----
+    # 4. Coefficient forest plot
     plot_coefficients(result, health, sp_pretty,
                       out_dir / f"{h_safe}_coefficients.png")
 
-    # ---- 5. Moran's I on residuals ----
+    # 5. Moran's I on residuals
     xy    = d[COORD_COLS].values.astype(float)
     k_eff = min(K_NEIGHBORS, n - 2)
     W     = knn_weights(xy, k=k_eff)
     I_obs, p_moran = morans_I_perm(resid, W, n_perm=N_PERMUTATIONS, seed=SEED_MORAN)
 
-    # ---- 6. Dominance analysis ----
+    # 6. Dominance analysis (with direction from MLR)
     X_pred_arr = d[predictors].values.astype(float)
     X_ctrl_arr = d[controls].values.astype(float) if controls else np.empty((n, 0))
 
-    da_df = dominance_analysis(y, X_pred_arr, X_ctrl_arr, predictors)
+    da_df = dominance_analysis(y, X_pred_arr, X_ctrl_arr, predictors, predictor_signs)
     da_df["species"]       = sp_pretty
     da_df["health_metric"] = HEALTH_LABELS.get(health, health)
     da_df.to_csv(out_dir / f"{h_safe}_dominance.csv", index=False)
     plot_dominance(da_df, health, sp_pretty, out_dir / f"{h_safe}_dominance.png")
 
-    # ---- Save OLS summary text ----
+    # Save OLS summary text
     with open(out_dir / f"{h_safe}_OLS_summary.txt", "w") as f:
         f.write(result.summary().as_text())
         f.write(f"\n\nMoran's I on residuals: I = {I_obs:.4f}, "
                 f"p (permutation, {N_PERMUTATIONS} perms) = {p_moran:.4f}")
         f.write(f"\nShapiro-Wilk: W = {sw['shapiro_W']:.4f}, p = {sw['shapiro_p']:.4f}")
-        f.write("\n\nDominance analysis:\n")
-        f.write(da_df[["predictor", "dominance_weight", "pct_of_r2"]].to_string(index=False))
+        f.write("\n\nDominance analysis (with direction):\n")
+        f.write(da_df[["predictor_display", "dominance_weight", "pct_of_r2"]].to_string(index=False))
 
-    # ---- Build MLR summary rows (one per predictor) ----
+    # Build MLR summary rows (one per predictor)
+    # Includes both raw and standardised coefficients for downstream plotting
     mlr_rows = []
-    ci = result.conf_int()
     for pred in predictors:
         if pred not in result.params.index:
             continue
         mlr_rows.append({
-            "species":          sp_pretty,
-            "health_metric":    HEALTH_LABELS.get(health, health),
-            "predictor":        PREDICTOR_LABELS.get(pred, pred),
-            "coefficient":      result.params[pred],
-            "ci_lower":         ci.loc[pred, 0],
-            "ci_upper":         ci.loc[pred, 1],
-            "t_stat":           result.tvalues[pred],
-            "p_value":          result.pvalues[pred],
-            "significant":      result.pvalues[pred] < ALPHA,
-            "R2":               result.rsquared,
-            "R2_adj":           result.rsquared_adj,
-            "n":                n,
-            "shapiro_W":        sw["shapiro_W"],
-            "shapiro_p":        sw["shapiro_p"],
-            "morans_I":         I_obs,
-            "morans_p":         p_moran,
-            "spatial_autocorr": p_moran < ALPHA if np.isfinite(p_moran) else False,
+            "species":           sp_pretty,
+            "health_metric":     HEALTH_LABELS.get(health, health),
+            "predictor":         PREDICTOR_LABELS.get(pred, pred),
+            "coefficient":       result.params[pred],
+            "ci_lower":          ci.loc[pred, 0],
+            "ci_upper":          ci.loc[pred, 1],
+            "std_coefficient":   std_coefs.get(pred, np.nan),
+            "std_ci_lower":      std_ci_low.get(pred, np.nan),
+            "std_ci_upper":      std_ci_high.get(pred, np.nan),
+            "t_stat":            result.tvalues[pred],
+            "p_value":           result.pvalues[pred],
+            "significant":       result.pvalues[pred] < ALPHA,
+            "direction":         SIGN_LABELS.get(predictor_signs.get(pred, 0.0), "?"),
+            "R2":                result.rsquared,
+            "R2_adj":            result.rsquared_adj,
+            "n":                 n,
+            "shapiro_W":         sw["shapiro_W"],
+            "shapiro_p":         sw["shapiro_p"],
+            "morans_I":          I_obs,
+            "morans_p":          p_moran,
+            "spatial_autocorr":  p_moran < ALPHA if np.isfinite(p_moran) else False,
         })
 
-    # ---- Build dominance summary rows ----
-    da_rows = da_df.to_dict("records")
-
-    return mlr_rows, da_rows
+    return mlr_rows, da_df.to_dict("records")
 
 
 # ============================================================
@@ -830,11 +1023,10 @@ def main():
         print(f"  {species}")
         print(f"{'='*60}")
 
-        sp_out     = OUT_ROOT / species
+        sp_out    = OUT_ROOT / species
         ensure_dir(sp_out)
-        sp_pretty  = SPECIES_LABELS.get(species, species)
+        sp_pretty = SPECIES_LABELS.get(species, species)
 
-        # ---- Load ----
         try:
             df = pd.read_csv(csv_path)
         except Exception as e:
@@ -847,7 +1039,6 @@ def main():
             print(f"  [skip] Missing columns: {missing}")
             continue
 
-        # ---- Attach coordinates ----
         try:
             df = attach_xy_from_shapefile(df)
         except Exception as e:
@@ -861,16 +1052,16 @@ def main():
             print(f"  [skip] All-NaN coordinates (ID mismatch?).")
             continue
 
-        # ---- Clean ----
         df = make_numeric(df, required + COORD_COLS)
         df = apply_filters(df, required + COORD_COLS)
         print(f"  n = {len(df)} trees after filtering")
 
-        # ---- Run per health metric ----
         sp_mlr_rows, sp_da_rows = [], []
 
         for health in HEALTH_VARS:
-            print(f"  → {HEALTH_LABELS.get(health, health)}")
+            in_describe = health in HEALTH_VARS_DESCRIBE
+            print(f"  → {HEALTH_LABELS.get(health, health)}"
+                  + ("  [described in paper]" if in_describe else "  [figures only]"))
             h_out = sp_out / health
             ensure_dir(h_out)
 
@@ -884,7 +1075,6 @@ def main():
             print(f"  [skip] No results for {species}")
             continue
 
-        # Save per-species tables
         pd.DataFrame(sp_mlr_rows).to_csv(
             sp_out / "MLR_results_all_health_metrics.csv", index=False
         )
@@ -897,12 +1087,12 @@ def main():
         all_da_rows.extend(sp_da_rows)
         print(f"  [ok] Saved to {sp_out}")
 
-    # ---- Combined outputs ----
     if all_mlr_rows:
         all_mlr_df = pd.DataFrame(all_mlr_rows)
         all_mlr_df.to_csv(OUT_ROOT / "ALL_species_MLR_results.csv", index=False)
         plot_combined_r2(all_mlr_df, OUT_ROOT / "ALL_species_R2_heatmap.png")
         plot_combined_morans(all_mlr_df, OUT_ROOT / "ALL_species_MoransI_residuals.png")
+        plot_combined_forest(all_mlr_df, OUT_ROOT / "ALL_species_forest_plot.png")
 
     if all_da_rows:
         all_da_df = pd.DataFrame(all_da_rows)

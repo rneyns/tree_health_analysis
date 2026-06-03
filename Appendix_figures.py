@@ -22,32 +22,27 @@ alternative predictors are strongly correlated with the main ones
 (same environmental variable, different spatial scale or chemical
 proxy), they are NOT added to the existing multivariate models.
 Results are summarised as:
-  - Coefficient direction × species-agreement heatmap
+  - Coefficient direction × significance heatmap, one panel per species
     (AppB_univariate_coef_heatmap.png)
 
     Design rationale
     ────────────────
-    Colour HUE   : direction of association across the majority of species
-                     Red  = positive (majority of species show β > 0)
-                     Blue = negative (majority of species show β < 0)
-                     Grey = no majority (≤ 2 species agree on direction)
+    Colour HUE   : direction of association
+                     Red  = positive (β > 0)
+                     Blue = negative (β < 0)
+                     Grey = zero coefficient / no data
 
-    Colour SHADE : how many species agree on that direction (out of 5)
-                     3 species → light shade  (40 % opacity equivalent)
-                     4 species → medium shade (70 % opacity equivalent)
-                     5 species → full shade   (100 % opacity)
-                   This makes consensus immediately visible: dark = robust,
-                   light = tentative.
+    Colour SHADE : significance of the association (p < 0.05)
+                     Full shade  = significant
+                     Light shade = not significant
 
-    Cell TEXT    : fraction of species for which the association is
-                   statistically significant (p < 0.05), irrespective of
-                   direction. This is reported separately from directional
-                   consensus so the two concepts are not conflated.
+    Cell TEXT    : ✓ where the association is statistically significant
+                   (p < 0.05)
 
-    Legend       : discrete, matching the actual categories shown in the
-                   matrix (not a continuous colorbar).
+    Legend       : discrete patches matching the actual categories shown.
 
-  - R² heatmap showing explained variance per predictor × metric
+  - R² heatmap showing explained variance per predictor × metric,
+    one panel per species, shared colour scale
     (AppB_univariate_r2_heatmap.png)
   - Full results table  (AppB_univariate_results.csv)
 
@@ -224,30 +219,21 @@ HEALTH_ORDER_ALL   = HEALTH_ORDER_MAIN + HEALTH_ORDER_EXTRA
 
 # ── Colours used in Part B coefficient heatmap ────────────
 # Base hues for positive (red) and negative (blue) directions.
-# Three shades per hue correspond to 3 / 4 / 5 species agreeing.
+# Two shades per hue correspond to significant / not significant.
 _RED_BASE  = np.array([0.769, 0.306, 0.322])   # #C44E52
 _BLUE_BASE = np.array([0.298, 0.447, 0.690])   # #4C72B0
-_GREY_CELL = np.array([0.88,  0.88,  0.88])    # no majority
+_GREY_CELL = np.array([0.88,  0.88,  0.88])    # no data / zero coef
 
-def _shade(base_rgb, n_agree, n_total=N_SPECIES):
+def _shade(base_rgb, significant):
     """
-    Return an RGBA tuple for a cell where `n_agree` out of `n_total`
-    species agree on direction.
-      n_agree == n_total     → full colour  (alpha 1.0)
-      n_agree == n_total - 1 → medium shade (alpha 0.65)
-      n_agree == n_total - 2 → light shade  (alpha 0.35)
-    Values below the majority threshold should not be passed here.
+    Return an RGBA tuple for a single-species cell.
+      significant=True  → full colour  (alpha 1.0)
+      significant=False → light shade  (alpha 0.35)
     """
-    alphas = {0: 0.35, 1: 0.65, 2: 1.0}
-    # distance from the minimum majority (ceil(n_total/2)+1 could vary,
-    # but we fix majority = > n_total/2, so minimum majority is 3 for 5 species)
-    min_majority = (n_total // 2) + 1          # 3 for N_SPECIES=5
-    level = min(n_agree - min_majority, 2)     # 0 / 1 / 2
-    alpha = alphas.get(level, 1.0)
-    # Blend base colour with white according to alpha
-    white = np.ones(3)
+    alpha   = 1.0 if significant else 0.35
+    white   = np.ones(3)
     blended = alpha * base_rgb + (1 - alpha) * white
-    return tuple(blended) + (1.0,)             # fully opaque RGBA
+    return tuple(blended) + (1.0,)
 
 
 # ╔══════════════════════════════════════════════════════════╗
@@ -676,200 +662,134 @@ def run_part_B():
 
 
 # ──────────────────────────────────────────────────────────
-# Part B coefficient heatmap – redesigned
+# Part B coefficient heatmap – per species, small multiples
 # ──────────────────────────────────────────────────────────
-
-def _build_coef_matrix(results, health_order, pred_order):
-    """
-    For each (predictor × health metric) cell, compute:
-      - n_positive : number of species with β > 0
-      - n_negative : number of species with β < 0
-      - n_significant : number of species where p < ALPHA
-      - majority_direction : +1 (positive majority), -1 (negative majority),
-                              0 (no majority, i.e. tied or ≤ N_SPECIES//2 agree)
-      - n_majority : how many species agree with the majority direction
-
-    A majority requires strictly more than half the available species
-    (those for which data existed) to agree on the same sign.
-    """
-    min_majority = (N_SPECIES // 2) + 1   # 3 for 5 species
-
-    records = []
-    for hm in health_order:
-        for pred in pred_order:
-            sub = results[(results["health_metric"] == hm) &
-                          (results["predictor"] == pred)]
-            if sub.empty:
-                records.append({
-                    "health_metric":      hm,
-                    "predictor":          pred,
-                    "n_positive":         0,
-                    "n_negative":         0,
-                    "n_significant":      0,
-                    "majority_direction": 0,
-                    "n_majority":         0,
-                    "n_available":        0,
-                })
-                continue
-
-            n_available  = len(sub)
-            n_pos        = (sub["coef_sign"] >  0).sum()
-            n_neg        = (sub["coef_sign"] <  0).sum()
-            n_sig        = sub["significant"].sum()
-
-            if n_pos >= min_majority:
-                direction = +1
-                n_maj     = int(n_pos)
-            elif n_neg >= min_majority:
-                direction = -1
-                n_maj     = int(n_neg)
-            else:
-                direction = 0
-                n_maj     = int(max(n_pos, n_neg))
-
-            records.append({
-                "health_metric":      hm,
-                "predictor":          pred,
-                "n_positive":         int(n_pos),
-                "n_negative":         int(n_neg),
-                "n_significant":      int(n_sig),
-                "majority_direction": direction,
-                "n_majority":         n_maj,
-                "n_available":        n_available,
-            })
-
-    return pd.DataFrame(records)
-
-
-def _cell_colour(direction, n_majority, n_available):
-    """
-    Return an RGBA face colour for a heatmap cell.
-
-    direction   : +1 / -1 / 0
-    n_majority  : how many species agree (only meaningful when direction ≠ 0)
-    n_available : total number of species with data for this cell
-    """
-    if direction == 0 or n_available == 0:
-        return tuple(_GREY_CELL) + (1.0,)
-    base = _RED_BASE if direction > 0 else _BLUE_BASE
-    return _shade(base, n_majority, n_total=n_available)
-
 
 def _plot_B_coef_heatmap(results):
     """
-    Redesigned coefficient direction heatmap for Part B.
+    Coefficient direction heatmap – one panel per species (small multiples).
 
-    Colour hue    : direction of association (red = positive, blue = negative,
-                    grey = no majority among available species)
-    Colour shade  : number of species agreeing with the majority direction
-                    (light = 3 / 5, medium = 4 / 5, dark = 5 / 5)
-    Cell text     : fraction of species with a significant association (p < 0.05),
-                    reported independently of directional consensus
-    Legend        : discrete patches, one per category
+    Colour hue    : direction of association
+                      Red  = positive (β > 0)
+                      Blue = negative (β < 0)
+                      Grey = zero coefficient / no data
+    Colour shade  : significance of the association (p < 0.05)
+                      Full shade  = significant
+                      Light shade = not significant
+    Cell text     : ✓ where the association is statistically significant
+    Legend        : discrete patches matching the actual categories shown
     """
     health_order = [h for h in HEALTH_ORDER_MAIN
                     if h in results["health_metric"].unique()]
     pred_order   = [EXTRA_PREDICTORS[p] for p in EXTRA_PREDICTORS
                     if EXTRA_PREDICTORS[p] in results["predictor"].unique()]
+    species_list = [SPECIES_LABELS[s] for s in SPECIES_LABELS
+                    if SPECIES_LABELS[s] in results["species"].unique()]
 
-    if not health_order or not pred_order:
+    if not health_order or not pred_order or not species_list:
         print("  [warn] No data to plot for Part B coefficient heatmap.")
         return
 
-    mat_df = _build_coef_matrix(results, health_order, pred_order)
-
     n_h = len(health_order)
     n_p = len(pred_order)
+    n_s = len(species_list)
 
-    fig, ax = plt.subplots(
-        figsize=(max(6, 1.6 * n_h), 1.4 + 0.65 * n_p)
+    fig, axes = plt.subplots(
+        1, n_s,
+        figsize=(max(4, 1.4 * n_h) * n_s, 1.8 + 0.65 * n_p),
+        sharey=True
     )
+    if n_s == 1:
+        axes = [axes]
 
-    # Draw cells manually so each gets its own computed colour
-    for pi, pred in enumerate(pred_order):
-        for hi, hm in enumerate(health_order):
-            row = mat_df[(mat_df["predictor"] == pred) &
-                         (mat_df["health_metric"] == hm)]
-            if row.empty:
-                facecolor = tuple(_GREY_CELL) + (1.0,)
-                txt       = ""
-                n_sig     = 0
-                n_avail   = 0
-            else:
-                row         = row.iloc[0]
-                direction   = row["majority_direction"]
-                n_majority  = row["n_majority"]
-                n_avail     = row["n_available"]
-                n_sig       = row["n_significant"]
-                facecolor   = _cell_colour(direction, n_majority, n_avail)
+    for ax, species in zip(axes, species_list):
+        sp_results = results[results["species"] == species]
 
-            # Draw filled rectangle
-            rect = plt.Rectangle(
-                (hi - 0.5, pi - 0.5), 1, 1,
-                facecolor=facecolor, edgecolor="white", linewidth=1.2
-            )
-            ax.add_patch(rect)
+        for pi, pred in enumerate(pred_order):
+            for hi, hm in enumerate(health_order):
+                row = sp_results[(sp_results["predictor"] == pred) &
+                                 (sp_results["health_metric"] == hm)]
 
-            # Cell text: fraction significant (e.g. "3/5")
-            if n_avail > 0:
-                txt = f"{n_sig}/{n_avail}"
-                # Choose text colour for legibility against the cell colour
-                brightness = 0.299*facecolor[0] + 0.587*facecolor[1] + 0.114*facecolor[2]
-                txt_color  = "white" if brightness < 0.55 else "black"
-                ax.text(hi, pi, txt,
-                        ha="center", va="center",
-                        fontsize=8.5, color=txt_color,
-                        fontweight="bold")
+                if row.empty:
+                    facecolor = tuple(_GREY_CELL) + (1.0,)
+                    txt       = ""
+                else:
+                    row       = row.iloc[0]
+                    coef_sign = row["coef_sign"]
+                    is_sig    = bool(row["significant"])
 
-    ax.set_xlim(-0.5, n_h - 0.5)
-    ax.set_ylim(-0.5, n_p - 0.5)
-    ax.set_xticks(range(n_h))
-    ax.set_xticklabels(health_order, rotation=35, ha="right", fontsize=9)
-    ax.set_yticks(range(n_p))
-    ax.set_yticklabels(pred_order, fontsize=9)
-    ax.set_aspect("equal")
+                    if coef_sign > 0:
+                        facecolor = _shade(_RED_BASE,  is_sig)
+                    elif coef_sign < 0:
+                        facecolor = _shade(_BLUE_BASE, is_sig)
+                    else:
+                        facecolor = tuple(_GREY_CELL) + (1.0,)
+
+                    txt = "✓" if is_sig else ""
+
+                rect = plt.Rectangle(
+                    (hi - 0.5, pi - 0.5), 1, 1,
+                    facecolor=facecolor, edgecolor="white", linewidth=1.2
+                )
+                ax.add_patch(rect)
+
+                if txt:
+                    brightness = (0.299 * facecolor[0] +
+                                  0.587 * facecolor[1] +
+                                  0.114 * facecolor[2])
+                    txt_color  = "white" if brightness < 0.55 else "black"
+                    ax.text(hi, pi, txt,
+                            ha="center", va="center",
+                            fontsize=10, color=txt_color, fontweight="bold")
+
+        ax.set_xlim(-0.5, n_h - 0.5)
+        ax.set_ylim(-0.5, n_p - 0.5)
+        ax.set_xticks(range(n_h))
+        ax.set_xticklabels(health_order, rotation=35, ha="right", fontsize=8)
+        ax.set_aspect("equal")
+        ax.set_title(species, fontsize=9, style="italic")
+
+    axes[0].set_yticks(range(n_p))
+    axes[0].set_yticklabels(pred_order, fontsize=9)
 
     # ── Discrete legend ───────────────────────────────────
-    min_majority = (N_SPECIES // 2) + 1   # = 3 for 5 species
-    legend_items = []
-
-    # Positive direction shades
-    for n_agree in range(min_majority, N_SPECIES + 1):
-        col   = _shade(_RED_BASE, n_agree, n_total=N_SPECIES)
-        label = f"Positive – {n_agree}/{N_SPECIES} species"
-        legend_items.append(mpatches.Patch(facecolor=col, edgecolor="grey",
-                                           linewidth=0.5, label=label))
-
-    # Negative direction shades
-    for n_agree in range(min_majority, N_SPECIES + 1):
-        col   = _shade(_BLUE_BASE, n_agree, n_total=N_SPECIES)
-        label = f"Negative – {n_agree}/{N_SPECIES} species"
-        legend_items.append(mpatches.Patch(facecolor=col, edgecolor="grey",
-                                           linewidth=0.5, label=label))
-
-    # No majority
-    legend_items.append(mpatches.Patch(
-        facecolor=tuple(_GREY_CELL) + (1.0,),
-        edgecolor="grey", linewidth=0.5,
-        label=f"No majority (≤ {min_majority - 1}/{N_SPECIES} agree)"
-    ))
-
-    ax.legend(
+    legend_items = [
+        mpatches.Patch(
+            facecolor=_shade(_RED_BASE,  True),
+            edgecolor="grey", linewidth=0.5, label="Positive, significant (p < 0.05)"
+        ),
+        mpatches.Patch(
+            facecolor=_shade(_RED_BASE,  False),
+            edgecolor="grey", linewidth=0.5, label="Positive, not significant"
+        ),
+        mpatches.Patch(
+            facecolor=_shade(_BLUE_BASE, True),
+            edgecolor="grey", linewidth=0.5, label="Negative, significant (p < 0.05)"
+        ),
+        mpatches.Patch(
+            facecolor=_shade(_BLUE_BASE, False),
+            edgecolor="grey", linewidth=0.5, label="Negative, not significant"
+        ),
+        mpatches.Patch(
+            facecolor=tuple(_GREY_CELL) + (1.0,),
+            edgecolor="grey", linewidth=0.5, label="Zero coefficient / no data"
+        ),
+    ]
+    axes[-1].legend(
         handles=legend_items,
         loc="upper left",
         bbox_to_anchor=(1.02, 1.0),
         borderaxespad=0,
         fontsize=8,
-        title="Direction  (shade = consensus\namong available species)",
+        title="Direction & significance\n(✓ = p < 0.05)",
         title_fontsize=8,
         framealpha=0.9,
     )
 
-    ax.set_title(
-        "Appendix B – Alternative predictors: direction of association\n"
-        "Colour = majority direction  |  shade = number of agreeing species\n"
-        "Cell text = no. of species with significant association (p < 0.05)",
-        fontsize=10, pad=12
+    fig.suptitle(
+        "Appendix B – Alternative predictors: direction of association per species\n"
+        "Colour = direction  |  shade = significance  |  ✓ = p < 0.05",
+        fontsize=10, y=1.01
     )
 
     plt.tight_layout()
@@ -881,56 +801,82 @@ def _plot_B_coef_heatmap(results):
 
 def _plot_B_r2_heatmap(results):
     """
-    Heatmap of partial R² (predictor contribution above height alone),
-    averaged across species.
+    Partial R² heatmap – one panel per species, shared colour scale
+    (vmax = 95th percentile across all species).
     """
     health_order = [h for h in HEALTH_ORDER_MAIN
                     if h in results["health_metric"].unique()]
     pred_order   = [EXTRA_PREDICTORS[p] for p in EXTRA_PREDICTORS
                     if EXTRA_PREDICTORS[p] in results["predictor"].unique()]
+    species_list = [SPECIES_LABELS[s] for s in SPECIES_LABELS
+                    if SPECIES_LABELS[s] in results["species"].unique()]
 
-    agg = (results.groupby(["health_metric", "predictor"])["partial_R2"]
-           .mean().reset_index())
+    if not health_order or not pred_order or not species_list:
+        print("  [warn] No data to plot for Part B R² heatmap.")
+        return
 
-    n_p = len(pred_order)
     n_h = len(health_order)
-    mat = np.full((n_p, n_h), np.nan)
+    n_p = len(pred_order)
+    n_s = len(species_list)
 
-    for pi, pred in enumerate(pred_order):
-        for hi, hm in enumerate(health_order):
-            sub = agg[(agg.predictor == pred) & (agg.health_metric == hm)]
-            if not sub.empty:
-                mat[pi, hi] = sub["partial_R2"].values[0]
+    # Build all matrices first so we can compute a shared vmax
+    mats = {}
+    for species in species_list:
+        sp_results = results[results["species"] == species]
+        mat = np.full((n_p, n_h), np.nan)
+        for pi, pred in enumerate(pred_order):
+            for hi, hm in enumerate(health_order):
+                sub = sp_results[(sp_results["predictor"] == pred) &
+                                 (sp_results["health_metric"] == hm)]
+                if not sub.empty:
+                    mat[pi, hi] = sub["partial_R2"].values[0]
+        mats[species] = mat
 
-    fig, ax = plt.subplots(
-        figsize=(max(6, 1.5 * n_h), 1.0 + 0.55 * n_p)
+    all_vals = np.concatenate([m.ravel() for m in mats.values()])
+    finite_vals = all_vals[np.isfinite(all_vals)]
+    vmax = np.percentile(finite_vals, 95) if len(finite_vals) > 0 else 0.1
+
+    fig, axes = plt.subplots(
+        1, n_s,
+        figsize=(max(3.5, 1.3 * n_h) * n_s, 1.2 + 0.55 * n_p),
+        sharey=True
     )
-    vmax = np.nanpercentile(mat, 95) if np.any(np.isfinite(mat)) else 0.1
-    im   = ax.imshow(mat, aspect="auto", cmap="YlOrRd", vmin=0, vmax=vmax)
+    if n_s == 1:
+        axes = [axes]
 
-    for pi in range(n_p):
-        for hi in range(n_h):
-            val = mat[pi, hi]
-            if np.isfinite(val):
-                txt_c = "white" if val > vmax * 0.65 else "black"
-                ax.text(hi, pi, f"{val:.3f}",
-                        ha="center", va="center", fontsize=8, color=txt_c)
+    ims = []
+    for ax, species in zip(axes, species_list):
+        mat = mats[species]
+        im  = ax.imshow(mat, aspect="auto", cmap="YlOrRd", vmin=0, vmax=vmax)
+        ims.append(im)
 
-    ax.set_xticks(range(n_h))
-    ax.set_xticklabels(health_order, rotation=35, ha="right", fontsize=9)
-    ax.set_yticks(range(n_p))
-    ax.set_yticklabels(pred_order, fontsize=8)
+        for pi in range(n_p):
+            for hi in range(n_h):
+                val = mat[pi, hi]
+                if np.isfinite(val):
+                    txt_c = "white" if val > vmax * 0.65 else "black"
+                    ax.text(hi, pi, f"{val:.3f}",
+                            ha="center", va="center", fontsize=7.5, color=txt_c)
 
-    cbar = plt.colorbar(im, ax=ax, shrink=0.7)
-    cbar.set_label("Partial R²  (above height alone, avg. across species)", fontsize=8)
+        ax.set_xticks(range(n_h))
+        ax.set_xticklabels(health_order, rotation=35, ha="right", fontsize=8)
+        ax.set_title(species, fontsize=9, style="italic")
 
-    ax.set_title(
-        "Appendix B – Alternative predictors: partial R²\n"
-        "(univariate OLS, height-controlled, averaged across species)",
+    axes[0].set_yticks(range(n_p))
+    axes[0].set_yticklabels(pred_order, fontsize=8)
+
+    # Single shared colourbar attached to the rightmost panel
+    cbar = fig.colorbar(ims[-1], ax=axes[-1], shrink=0.7, pad=0.02)
+    cbar.set_label("Partial R²  (above height alone)", fontsize=8)
+
+    fig.suptitle(
+        "Appendix B – Alternative predictors: partial R² per species\n"
+        "(univariate OLS, height-controlled; shared colour scale)",
         fontsize=10
     )
     plt.tight_layout()
-    fig.savefig(OUT_ROOT / "AppB_univariate_r2_heatmap.png", dpi=FIG_DPI)
+    fig.savefig(OUT_ROOT / "AppB_univariate_r2_heatmap.png",
+                dpi=FIG_DPI, bbox_inches="tight")
     plt.close(fig)
     print("  Saved: AppB_univariate_r2_heatmap.png")
 
