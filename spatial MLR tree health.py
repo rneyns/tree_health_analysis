@@ -676,6 +676,88 @@ def plot_combined_dominance_stacked(da_all, outpath):
     plt.tight_layout(); fig.savefig(outpath, dpi=FIG_DPI); plt.close(fig)
 
 
+def plot_dominance_stacked_bar(da_all: pd.DataFrame, outpath: Path) -> None:
+    """
+    Horizontal stacked bar chart: average % of R² explained per predictor,
+    averaged across all health metrics, one bar per species.
+
+    Bars are normalised to 100% so the focus is on the *relative* dominance
+    hierarchy rather than absolute R² magnitude. Labels inside each segment
+    show the raw avg. % of R² so the numbers match the rest of the analysis.
+    """
+    PRED_COLOURS = {
+        "Impervious surface (100 m)":       "#2563a8",
+        "Black carbon (annual mean)":        "#c0461e",
+        "Land surface temperature (100 m)":  "#0e7a56",
+        "Solar radiation":                   "#a07820",
+    }
+
+    species_order = [
+        "Acer platanoides",
+        "Acer pseudoplatanus",
+        "Aesculus hippocastanum",
+        "Platanus \u00d7 acerifolia",
+        "Tilia \u00d7 euchlora",
+    ]
+
+    # Average pct_of_r2 per species × predictor across all health metrics
+    agg = (
+        da_all
+        .groupby(["species", "predictor"])["pct_of_r2"]
+        .mean()
+        .reset_index()
+    )
+
+    species_present = [s for s in species_order if s in agg["species"].unique()]
+    pred_list = list(PRED_COLOURS.keys())
+
+    fig, ax = plt.subplots(figsize=(9, 0.9 + 0.75 * len(species_present)))
+
+    for si, species in enumerate(species_present):
+        sub = agg[agg["species"] == species]
+        total = sub["pct_of_r2"].sum()
+        left = 0.0
+        for pred in pred_list:
+            val = sub.loc[sub["predictor"] == pred, "pct_of_r2"]
+            raw = float(val.values[0]) if len(val) else 0.0
+            pct_norm = (raw / total * 100) if total > 1e-9 else 0.0
+            col = PRED_COLOURS.get(pred, "#888888")
+            ax.barh(si, pct_norm, left=left, height=0.55,
+                    color=col, linewidth=0)
+            if pct_norm >= 12:
+                ax.text(left + pct_norm / 2, si,
+                        f"{raw:.0f}%",
+                        ha="center", va="center",
+                        fontsize=8.5, color="white", fontweight="bold")
+            left += pct_norm
+
+    ax.set_yticks(range(len(species_present)))
+    ax.set_yticklabels([f"$\\it{{{s}}}$" for s in species_present], fontsize=10)
+    ax.set_xlim(0, 100)
+    ax.set_xlabel("Relative dominance (% of R², normalised)", fontsize=9)
+    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.tick_params(axis="both", labelsize=9)
+
+    handles = [
+        plt.Rectangle((0, 0), 1, 1, color=PRED_COLOURS[p], label=p)
+        for p in pred_list
+    ]
+    ax.legend(handles=handles, loc="lower right", fontsize=8,
+              framealpha=0.85, edgecolor="none")
+
+    ax.set_title(
+        "Environmental stressor dominance per species\n"
+        "(avg. % of R\u00b2 across phenology metrics, normalised to 100%)",
+        fontsize=10, pad=8,
+    )
+
+    plt.tight_layout()
+    fig.savefig(outpath, dpi=FIG_DPI, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  [dominance bar] Saved \u2192 {outpath}")
+
+
 # ╔══════════════════════════════════════════════════════════╗
 # ║    APPENDIX FOREST PLOT: OLS vs SEM vs SLM (β*)         ║
 # ╚══════════════════════════════════════════════════════════╝
@@ -710,7 +792,6 @@ def plot_combined_forest_spatial(summary_df: pd.DataFrame, outpath: Path) -> Non
     y_pos   = {p: i for i, p in enumerate(pred_list)}
     offsets = {"OLS": -0.22, "SEM": 0.0, "SLM": 0.22}
 
-    # Columns in summary_df for β* and scaled SE per model
     std_coef_col = {"OLS": "std_coef_OLS", "SEM": "std_coef_SEM", "SLM": "std_coef_SLM"}
     std_se_col   = {"OLS": "std_se_OLS",   "SEM": "std_se_SEM",   "SLM": "std_se_SLM"}
     p_raw_col    = {"OLS": "p_OLS",        "SEM": "p_raw_SEM",    "SLM": "p_raw_SLM"}
@@ -738,7 +819,6 @@ def plot_combined_forest_spatial(summary_df: pd.DataFrame, outpath: Path) -> Non
                 ax.set_visible(False)
                 continue
 
-            # Symmetric x-limit from all CI extents in this panel
             all_lo, all_hi = [], []
             for model in ["OLS", "SEM", "SLM"]:
                 betas = sub[std_coef_col[model]].dropna()
@@ -764,9 +844,9 @@ def plot_combined_forest_spatial(summary_df: pd.DataFrame, outpath: Path) -> Non
                         continue
                     yplot = yi + offset
 
-                    beta = row.get(std_coef_col[model], np.nan)
-                    se   = row.get(std_se_col[model],   np.nan)
-                    p_val = row.get(p_raw_col[model],   np.nan)
+                    beta  = row.get(std_coef_col[model], np.nan)
+                    se    = row.get(std_se_col[model],   np.nan)
+                    p_val = row.get(p_raw_col[model],    np.nan)
 
                     if not (np.isfinite(beta) and np.isfinite(se)):
                         continue
@@ -776,14 +856,12 @@ def plot_combined_forest_spatial(summary_df: pd.DataFrame, outpath: Path) -> Non
                     sig  = np.isfinite(p_val) and p_val < ALPHA
                     face = colour if sig else "white"
 
-                    # Whisker + end caps
                     ax.plot([lo, hi_], [yplot, yplot],
                             color=colour, lw=1.2, alpha=0.75,
                             solid_capstyle="round", zorder=1)
                     for xc in [lo, hi_]:
                         ax.plot([xc, xc], [yplot-0.07, yplot+0.07],
                                 color=colour, lw=1.0, alpha=0.75, zorder=1)
-                    # Dot
                     ax.plot(beta, yplot,
                             marker=marker, markersize=5.5,
                             color=colour, markerfacecolor=face,
@@ -802,7 +880,6 @@ def plot_combined_forest_spatial(summary_df: pd.DataFrame, outpath: Path) -> Non
             if hi == 0:
                 ax.set_ylabel(species, fontsize=8, fontstyle="italic", labelpad=6)
 
-    # Legend
     handles = [
         plt.Line2D([0],[0], marker=MODEL_MARKERS[m], linestyle="-",
                    color=MODEL_COLOURS[m], markerfacecolor=MODEL_COLOURS[m],
@@ -868,12 +945,10 @@ def run_all_models(df_sub, health, predictors, controls, sp_pretty, out_dir):
     col_names = list(X_sm.columns)
     col_idx   = {c: i for i, c in enumerate(col_names)}
 
-    # SD(y) and SD(x) for each predictor — used to standardise all three models
     sd_y = np.std(y, ddof=1)
     sd_x = {pred: np.std(d[pred].values.astype(float), ddof=1) for pred in predictors}
 
     def _standardise(beta_raw, se_raw, pred):
-        """β* = β × SD(x) / SD(y);  SE* = SE × SD(x) / SD(y)."""
         scale = (sd_x[pred] / sd_y) if sd_y > 1e-10 else 1.0
         return beta_raw * scale, se_raw * scale
 
@@ -975,7 +1050,6 @@ def run_all_models(df_sub, health, predictors, controls, sp_pretty, out_dir):
         f.write(da_df[["predictor","dominance_weight","pct_of_r2"]].to_string(index=False))
 
     # ── Build summary rows ────────────────────────────────────
-    # Helper: extract raw coef/SE from spatial model by predictor name
     def _get_raw(res, pred, what):
         if res is None: return np.nan
         idx = col_idx.get(pred)
@@ -985,16 +1059,13 @@ def run_all_models(df_sub, health, predictors, controls, sp_pretty, out_dir):
     for pred in predictors:
         p_lbl = PREDICTOR_LABELS.get(pred, pred)
 
-        # Raw OLS values
         coef_ols = ols_full.params.get(pred, np.nan)
         se_ols   = ols_full.bse.get(pred, np.nan)
         p_ols_v  = ols_full.pvalues.get(pred, np.nan)
         std_b_ols, std_se_ols = _standardise(coef_ols, se_ols, pred)
 
-        # Raw SEM values
         coef_sem = _get_raw(sem, pred, "beta")
         se_sem   = _get_raw(sem, pred, "se")
-        # z-test p-value for SEM
         p_sem_v  = (2*(1 - stats.norm.cdf(abs(coef_sem/se_sem)))
                     if (sem is not None and np.isfinite(coef_sem)
                         and np.isfinite(se_sem) and se_sem > 1e-12)
@@ -1002,7 +1073,6 @@ def run_all_models(df_sub, health, predictors, controls, sp_pretty, out_dir):
         std_b_sem, std_se_sem = (_standardise(coef_sem, se_sem, pred)
                                   if np.isfinite(coef_sem) else (np.nan, np.nan))
 
-        # Raw SLM values
         coef_slm = _get_raw(slm, pred, "beta")
         se_slm   = _get_raw(slm, pred, "se")
         p_slm_v  = (2*(1 - stats.norm.cdf(abs(coef_slm/se_slm)))
@@ -1016,7 +1086,6 @@ def run_all_models(df_sub, health, predictors, controls, sp_pretty, out_dir):
             "species":        sp_pretty,
             "health_metric":  h_lbl,
             "predictor":      p_lbl,
-            # Raw coefficients (kept for reference and per-metric plots)
             "coef_OLS":       coef_ols,
             "se_OLS":         se_ols,
             "p_OLS":          p_ols_v,
@@ -1027,14 +1096,12 @@ def run_all_models(df_sub, health, predictors, controls, sp_pretty, out_dir):
             "coef_SLM":       coef_slm,
             "se_SLM":         se_slm,
             "p_raw_SLM":      p_slm_v,
-            # Standardised coefficients β* — used by the forest plot
             "std_coef_OLS":   std_b_ols,
             "std_se_OLS":     std_se_ols,
             "std_coef_SEM":   std_b_sem,
             "std_se_SEM":     std_se_sem,
             "std_coef_SLM":   std_b_slm,
             "std_se_SLM":     std_se_slm,
-            # Model fit
             "R2_OLS":         ols_full.rsquared,
             "R2_adj_OLS":     ols_full.rsquared_adj,
             "AIC_OLS":        ols_full.aic,
@@ -1043,7 +1110,6 @@ def run_all_models(df_sub, health, predictors, controls, sp_pretty, out_dir):
             "rho_SLM":        slm["rho"]    if slm else np.nan,
             "AIC_SLM":        slm["aic"]    if slm else np.nan,
             "best_model_AIC": best_aic,
-            # Diagnostics
             "Morans_I_OLS":   I_ols,
             "Morans_p_OLS":   p_ols,
             "Morans_I_SEM":   I_sem,
@@ -1141,6 +1207,7 @@ def main():
         all_da_df = pd.DataFrame(all_da)
         all_da_df.to_csv(OUT_ROOT / "ALL_species_dominance.csv", index=False)
         plot_combined_dominance_stacked(all_da_df, OUT_ROOT / "ALL_dominance_stacked.png")
+        plot_dominance_stacked_bar(all_da_df,      OUT_ROOT / "ALL_dominance_stacked_bar.png")
 
     if all_rows or all_da:
         print(f"\n[ok] All outputs saved to: {OUT_ROOT}")
