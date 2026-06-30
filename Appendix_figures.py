@@ -62,6 +62,19 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import matplotlib.colors as mcolors
+
+# ── Font sizing ───────────────────────────────────────────
+# Single knob to scale ALL text in the figures.
+#   1.0 = original sizes; increase for larger fonts (1.4 ≈ +40%).
+FONT_SCALE = 1.4
+
+def _fs(size):
+    """Scale a base font size by the global FONT_SCALE factor."""
+    return size * FONT_SCALE
+
+# Scale the matplotlib default too, so elements without an explicit
+# fontsize (e.g. colourbar tick labels) grow consistently.
+plt.rcParams['font.size'] = 10 * FONT_SCALE
 from scipy import stats
 
 import geopandas as gpd
@@ -467,7 +480,7 @@ def run_part_A():
 
 def _plot_A_heatmap(da_all):
     """
-    Heatmap of dominance weights (% of R²) per predictor × health metric,
+    Heatmap of dominance weights (% of R²) per predictor × phenological metric,
     averaged across species. One panel per predictor.
     """
     predictors_pretty = [PREDICTOR_LABELS.get(p, p) for p in MAIN_PREDICTORS]
@@ -492,24 +505,24 @@ def _plot_A_heatmap(da_all):
 
         im = ax.imshow(piv.values, aspect="auto", cmap="Blues", vmin=0, vmax=100)
         ax.set_xticks(range(len(health_order)))
-        ax.set_xticklabels(health_order, rotation=40, ha="right", fontsize=7)
+        ax.set_xticklabels(health_order, rotation=40, ha="right", fontsize=_fs(7))
         ax.set_yticks(range(len(piv.index)))
-        ax.set_yticklabels(piv.index, fontsize=8)
-        ax.set_title(pred_pretty, fontsize=9)
+        ax.set_yticklabels(piv.index, fontsize=_fs(8))
+        ax.set_title(pred_pretty, fontsize=_fs(9))
 
         for i in range(piv.shape[0]):
             for j in range(piv.shape[1]):
                 val = piv.iloc[i, j]
                 if np.isfinite(val):
                     ax.text(j, i, f"{val:.0f}%",
-                            ha="center", va="center", fontsize=7,
+                            ha="center", va="center", fontsize=_fs(7),
                             color="white" if val > 55 else "black")
         plt.colorbar(im, ax=ax, label="% of R²", shrink=0.7)
 
     fig.suptitle(
-        "Appendix A – Dominance analysis: extended health metrics\n"
-        "% of R² per predictor × health metric (averaged across species)",
-        fontsize=11
+        "Appendix A – Dominance analysis: extended phenological metrics\n"
+        "% of R² per predictor × phenological metric (averaged across species)",
+        fontsize=_fs(11)
     )
     plt.tight_layout()
     fig.savefig(OUT_ROOT / "AppA_dominance_extended_heatmap.png", dpi=FIG_DPI)
@@ -545,13 +558,13 @@ def _plot_A_stacked(da_all):
         bottoms += vals
 
     ax.set_xticks(x)
-    ax.set_xticklabels(health_order, rotation=35, ha="right", fontsize=8)
+    ax.set_xticklabels(health_order, rotation=35, ha="right", fontsize=_fs(8))
     ax.set_ylabel("Average dominance weight (R²)  [height-controlled]")
     ax.set_title(
-        "Appendix A – Dominance analysis: extended health metrics\n"
+        "Appendix A – Dominance analysis: extended phenological metrics\n"
         "Average R² partition across species (main predictors)"
     )
-    ax.legend(loc="upper right", fontsize=8, framealpha=0.85)
+    ax.legend(loc="upper right", fontsize=_fs(8), framealpha=0.85)
 
     # Vertical separator between main and extra metrics
     if health_order:
@@ -561,7 +574,7 @@ def _plot_A_stacked(da_all):
             ax.axvline(n_main - 0.5, color="grey", lw=1.2, ls="--", alpha=0.7)
             ax.text(n_main - 0.5, ax.get_ylim()[1] * 0.97,
                     "← main analysis  |  appendix →",
-                    ha="center", va="top", fontsize=7, color="grey")
+                    ha="center", va="top", fontsize=_fs(7), color="grey")
 
     plt.tight_layout()
     fig.savefig(OUT_ROOT / "AppA_dominance_extended_stacked.png", dpi=FIG_DPI)
@@ -740,17 +753,17 @@ def _plot_B_coef_heatmap(results):
                     txt_color  = "white" if brightness < 0.55 else "black"
                     ax.text(hi, pi, txt,
                             ha="center", va="center",
-                            fontsize=10, color=txt_color, fontweight="bold")
+                            fontsize=_fs(10), color=txt_color, fontweight="bold")
 
         ax.set_xlim(-0.5, n_h - 0.5)
         ax.set_ylim(-0.5, n_p - 0.5)
         ax.set_xticks(range(n_h))
-        ax.set_xticklabels(health_order, rotation=35, ha="right", fontsize=8)
+        ax.set_xticklabels(health_order, rotation=35, ha="right", fontsize=_fs(8))
         ax.set_aspect("equal")
-        ax.set_title(species, fontsize=9, style="italic")
+        ax.set_title(species, fontsize=_fs(9), style="italic")
 
     axes[0].set_yticks(range(n_p))
-    axes[0].set_yticklabels(pred_order, fontsize=9)
+    axes[0].set_yticklabels(pred_order, fontsize=_fs(9))
 
     # ── Discrete legend ───────────────────────────────────
     legend_items = [
@@ -780,16 +793,16 @@ def _plot_B_coef_heatmap(results):
         loc="upper left",
         bbox_to_anchor=(1.02, 1.0),
         borderaxespad=0,
-        fontsize=8,
+        fontsize=_fs(8),
         title="Direction & significance\n(✓ = p < 0.05)",
-        title_fontsize=8,
+        title_fontsize=_fs(8),
         framealpha=0.9,
     )
 
     fig.suptitle(
         "Appendix B – Alternative predictors: direction of association per species\n"
         "Colour = direction  |  shade = significance  |  ✓ = p < 0.05",
-        fontsize=10, y=1.01
+        fontsize=_fs(10), y=1.01
     )
 
     plt.tight_layout()
@@ -856,23 +869,23 @@ def _plot_B_r2_heatmap(results):
                 if np.isfinite(val):
                     txt_c = "white" if val > vmax * 0.65 else "black"
                     ax.text(hi, pi, f"{val:.3f}",
-                            ha="center", va="center", fontsize=7.5, color=txt_c)
+                            ha="center", va="center", fontsize=_fs(7.5), color=txt_c)
 
         ax.set_xticks(range(n_h))
-        ax.set_xticklabels(health_order, rotation=35, ha="right", fontsize=8)
-        ax.set_title(species, fontsize=9, style="italic")
+        ax.set_xticklabels(health_order, rotation=35, ha="right", fontsize=_fs(8))
+        ax.set_title(species, fontsize=_fs(9), style="italic")
 
     axes[0].set_yticks(range(n_p))
-    axes[0].set_yticklabels(pred_order, fontsize=8)
+    axes[0].set_yticklabels(pred_order, fontsize=_fs(8))
 
     # Single shared colourbar attached to the rightmost panel
     cbar = fig.colorbar(ims[-1], ax=axes[-1], shrink=0.7, pad=0.02)
-    cbar.set_label("Partial R²  (above height alone)", fontsize=8)
+    cbar.set_label("Partial R²  (above height alone)", fontsize=_fs(8))
 
     fig.suptitle(
         "Appendix B – Alternative predictors: partial R² per species\n"
         "(univariate OLS, height-controlled; shared colour scale)",
-        fontsize=10
+        fontsize=_fs(10)
     )
     plt.tight_layout()
     fig.savefig(OUT_ROOT / "AppB_univariate_r2_heatmap.png",
